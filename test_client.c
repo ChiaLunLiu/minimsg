@@ -25,7 +25,7 @@ int main(int argc,char** argv)
 	puts("Socket created");
 	server.sin_addr.s_addr = inet_addr("127.0.0.1");
 	server.sin_family = AF_INET;
-	server.sin_port = htons(10000);
+	server.sin_port = htons(12345);
 	
 	if (connect(sock,(struct sockaddr*)&server,sizeof(server))<0)
 	{
@@ -34,17 +34,21 @@ int main(int argc,char** argv)
 	}
 	puts("Connected");
 		/* message testing */
-		for(i = 0 ;i < 100000 ; i++){
+		for(i = 0 ;i < 1000 ; i++){
 			printf("frame %d\n",i);
 			m = msg_alloc();
 			msg_append_string(m,"frame 1");
 			msg_append_string(m,"frame 2");
 			msg_append_string(m,"frame 3");
-			msg_send(sock,m);
-
-			msg_recv(sock,&m);
 			msg_print(m);
-			msg_free(m);
+			if(msg_send(sock,m) == MINIMSG_OK){
+				printf("send OK\n");
+			}
+			else printf("send FAIL\n");
+			printf("after send frame\n");
+	//		msg_recv(sock,&m);
+	//		msg_print(m);
+			//msg_free(m);
 		}
 	close(sock);
 	

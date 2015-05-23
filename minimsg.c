@@ -26,6 +26,7 @@
 static int (*g_callback)(msg_t* );
 
 static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd);
+static void free_fd_state(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
 
@@ -34,10 +35,15 @@ static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
 
 static int _frame_send(int sock,frame_t* f,int flags);
 
-static void qmsg_free(void* f)
+void msg_free(msg_t* m)
 {
-	msg_t* tmp = (msg_t*)f;
-	msg_free(tmp);
+	frame_t* f,*tmp;
+	for(f = m->front ; f ; ){
+		tmp = f;
+		f = f->next;
+		frame_free(tmp);
+	}
+	free(m);
 }
 
 int frame_transfer_byte(const frame_t* f)
@@ -69,6 +75,10 @@ inline const char*  frame_content(const frame_t* f)
 {
 	return f->content;
 }
+int frame_truesize(const frame_t* f)
+{
+	return f->length + 4;
+} 
 inline int frame_sendm(int sock,frame_t* f)
 {
 	return _frame_send(sock,f,MSG_MORE);
@@ -81,18 +91,22 @@ static int _frame_send(int sock,frame_t* f,int flags)
 {
 	int r=0;
 	int sent_byte = 0;
-	char* ptr = (char*)&(f->length);
 	int total = f->length + 4;
+	char*ptr;
 	
-	while(sent_byte < total){
-		
+//	printf("before length : %d\n",f->length);
+	f->length = htonl(f->length);
+//  printf("after length : %d\n",f->length);
+
+	ptr = (char*)&(f->length);
+	printf("frame content size : %d,%d\n",total,f->length);
+	while(sent_byte < total){	
 		r = send(sock,ptr+sent_byte,total - sent_byte,flags);
-		if(r < 0)break;
+		if(r <= 0)break;
 		sent_byte+=r;
 	}
-	frame_free(f);
-	if(r < 0)return FAIL;
-	return OK;
+	if(r <= 0)return MINIMSG_FAIL;
+	return MINIMSG_OK;
 }
 
 int frame_recv(int sock,frame_t** f)
@@ -145,6 +159,7 @@ void msg_append_frame(msg_t* m,frame_t* f)
 	}
 	if(m->front ==NULL) m->front = f;
 	m->frames++;
+	m->length+=frame_truesize(f);
 }
 msg_t* msg_alloc()
 {
@@ -153,56 +168,45 @@ msg_t* msg_alloc()
 	if(!m)return NULL;
 	m->frames = 0;
 	m->front = m->end = NULL;
+	m->length = 0;
 	return m;
-}
-void msg_free(msg_t* m)
-{
-	frame_t* f, *tmp;
-	for(f = m->front ; f ;){
-		tmp = f;
-		f = f->next;
-		frame_free(tmp);
-	}
-	free(m);
 }
 int msg_send(int sock,msg_t* m)
 {
 	int r=0;
 	int sent_byte = 0;
-	frame_t * tmp;
 	frame_t* f;
-	char* ptr = (char*)&(m->frames);
+	char* ptr;
+	
+	m->frames = htonl(m->frames);
+	ptr= (char*)&(m->frames);
 
 	while(sent_byte < 4){
 		r = send(sock,ptr+sent_byte,4 - sent_byte,MSG_MORE);
-		if(r < 0 )break;
+		if(r <= 0 )break;
 		sent_byte+=r;
 	};
-	if(r < 0){
+	if(r <= 0){
 		msg_free(m);
-		return r;
+		return MINIMSG_FAIL;
 	}
-	for(f = m->front ; f ; ){
-		tmp = f;
-		f = f->next;
+	for(f = m->front ; f ; f = f->next){
 		if(f == NULL){
-			if(frame_send(sock,tmp) != OK)goto fail;
+			if(frame_send(sock,f) != MINIMSG_OK)goto fail;
 		}
 		else{
-			if(frame_sendm(sock,tmp) != OK) goto fail;
+			if(frame_sendm(sock,f) != MINIMSG_OK) goto fail;
 		}
 	}
-	free(m);
-	return OK;
+	printf("truesize : %d\n",m->length + 4);
+	msg_free(m);
+	return MINIMSG_OK;
 fail:
 	printf("fail to %s\n",__func__);
-	while(f){
-		tmp = f;
-		f = f->next;
-		frame_free(tmp);
-	}
-	free(m);
-	return FAIL;
+	//TODO
+	// close socket ?
+	msg_free(m);
+	return MINIMSG_FAIL;
 }
 frame_t* msg_pop_frame(msg_t* m)
 {
@@ -269,13 +273,18 @@ fail:
 void msg_print(const msg_t * m)
 {
 	int cnt = 0;
+	int i;
 	const char* reply;
 	frame_t * tmp;
 	
 	for(tmp = m->front ; tmp ; tmp = tmp->next , cnt++){
 		printf("[frame %d]: ",cnt);
 		reply = frame_content(tmp);
-		printf("%s\n",reply);
+		for(i=0;i<tmp->length;i++){
+			printf("%c",reply[i]);
+		}
+		printf("\n");
+//		printf("%s\n",reply);
 	}	
 }
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg)
@@ -391,6 +400,7 @@ fail:
 }
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 {
+	static int debug = 0;
 	int r;
 	int recv_space;
 	unsigned int length;
@@ -400,51 +410,71 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 	char* dst;
 	fd_state_t* fds = (fd_state_t*)arg;
 	rb = fds->rb_recv;
-	int leave = 0;
-
+	int leave ;
+	int result;
+	char buf[256];
+	printf("%s\n",__func__);
 	
-	while( copy = ringbuffer_linear_freesize(rb) ){
-		dst = ringbuffer_get_end(rb);
-		r=recv(fds->sock,dst,copy,0);
-		if(r<=0)goto fail;
-		/* raw manipulation of ring buffer in order not to do double copy */
-		rb->end+=r;
-		rb->free_space-=r;
-		if(rb->end == rb->length)rb->end = 0;
-	}
 	
-	while(leave == 0){
-	  r = ringbuffer_datasize(rb);
-	  if(r == 0)break;
-
+	while(1){
+		copy = ringbuffer_freesize(rb);
+		if(copy > 256) copy = 256;
+		result=recv(fds->sock,buf,copy,0);
+		if(result<=0)break;
+		printf("push %d bytes\n",result);
+		ringbuffer_push_data(rb,buf,result);
+		
+		
+		leave=0;
+	  while(!leave){
+		  r = ringbuffer_datasize(rb);
+		  if(r == 0)break;
 	  switch(fds->recv_state){
 		case MINIMSG_STATE_RECV_NUMBER_OF_FRAME:
+			printf("state => MINIMSG_STATE_RECV_NUMBER_OF_FRAME\n");
 			if(r >= 4){
 				ringbuffer_pop_data(rb,(char*)&length,4);		
 				length = ntohl(length);
-				if(length > MINIMSG_MAX_NUMBER_OF_FRAME)goto fail;
+				if(length > MINIMSG_MAX_NUMBER_OF_FRAME){
+					printf("exceeds max frame %d > %d\n",length,MINIMSG_MAX_NUMBER_OF_FRAME);
+					goto fail;
+				}
+				else printf("get %d frames\n",length);
 				fds->recv_msg  = msg_alloc();
-				if(!fds->recv_msg)goto fail;
+				if(!fds->recv_msg){
+					printf("fail to msg_alloc()\n");
+					goto fail;
+				}
 				fds->recv_number_of_frame = length;
 				fds->recv_state = MINIMSG_STATE_RECV_FRAME_LENGTH;
 			}
-			else leave =1;
+			else leave=1;
 		break;
 		case MINIMSG_STATE_RECV_FRAME_LENGTH:
+			printf("state => MINIMSG_STATE_RECV_FRAME_LENGTH\n");
 			if(r >= 4){
-				ringbuffer_pop_data(rb,(char*)&length,4);		
+				ringbuffer_pop_data(rb,(char*)&length,4);
+			//	printf("before length : %d\n",length);		
 				length = ntohl(length);
-				if(length > MINIMSG_MAX_FRAME_CONTENT_SIZE)goto fail;
-				fds->recv_frame = frame_alloc( length+ 1);
+				if(length > MINIMSG_MAX_FRAME_CONTENT_SIZE){
+					printf("length content too big %d > %d\n",length,MINIMSG_MAX_FRAME_CONTENT_SIZE);
+					goto fail;
+				}
+				else{
+					printf("length = %d\n",length);
+				}
+				fds->recv_frame = frame_alloc( length);
 				if(!fds->recv_frame) goto fail;
 				fds->recv_current_frame_byte = 0;
 				fds->recv_state = MINIMSG_STATE_RECV_FRAME_CONTENT;
-			}		
-			else leave = 1;				
+			}
+			else leave=1;
 		break;
 		case MINIMSG_STATE_RECV_FRAME_CONTENT:
-			if(r + fds->recv_current_frame_byte >= fds->recv_frame->length){
-				copy = r + fds->recv_current_frame_byte - fds->recv_frame->length;
+			printf("state => MINIMSG_STATE_RECV_FRAME_CONTENT\n");
+			printf("(%d + %d ), %d\n",r,fds->recv_current_frame_byte,fds->recv_frame->length);
+			if(r  >= fds->recv_frame->length - fds->recv_current_frame_byte ){
+				copy = fds->recv_frame->length - fds->recv_current_frame_byte  ;
 				ringbuffer_pop_data(rb,fds->recv_frame->content+fds->recv_current_frame_byte,copy);
 				msg_append_frame(fds->recv_msg,fds->recv_frame);
 				fds->recv_number_of_frame--;
@@ -453,6 +483,9 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 					//TODO
 					// execute callback
 					//if( queue_push(q,fds->recv_msg)  == QUEUE_FAIL)goto fail;
+					msg_print(fds->recv_msg);
+					debug++;
+					printf("debug:%d\n",debug);
 				}
 				else
 					fds->recv_state = MINIMSG_STATE_RECV_FRAME_LENGTH;
@@ -460,17 +493,28 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 			else{
 				ringbuffer_pop_data(rb,fds->recv_frame->content+fds->recv_current_frame_byte,r);
 				fds->recv_current_frame_byte +=r;
+				printf("receive : %d\n",fds->recv_current_frame_byte);
 			}
 		break;
 		default:
 			printf("undefined state\n");
 			goto fail;
 		break;
-	  }
-	}
+	  } // switch
+     }// inner while
+	} // outer while
+	if (result == 0) {  /* disconnect */
+        	free_fd_state(fds);
+    	}else if (result < 0) {  /* error */
+        	if (errno == EAGAIN) // XXXX use evutil macro
+        	    return;
+        	perror("recv");
+        	free_fd_state(fds);
+    	}
 	return;	
 fail:
 	printf("fail\n");
+	free_fd_state(fds);
 	//TODO
 }
 /*
@@ -520,7 +564,15 @@ do_read(evutil_socket_t fd, short events, void *arg)
     }
 }
 */
-
+static void free_fd_state(fd_state_t *state)
+{
+    event_free(state->read_event);
+    event_free(state->write_event);
+    close(state->sock);
+    ringbuffer_destroy(state->rb_recv);
+    ringbuffer_destroy(state->rb_send);
+    free(state);
+}
 
 static fd_state_t *
 alloc_fd_state(struct event_base *base, evutil_socket_t fd)
@@ -575,7 +627,7 @@ static void do_accept(evutil_socket_t listener, short event, void *arg)
     } else if (fd > FD_SETSIZE) {
         close(fd); // XXX replace all closes with EVUTIL_CLOSESOCKET */
     } else {
-//	printf("accept a new fd\n");
+	printf("accept a new fd\n");
         evutil_make_socket_nonblocking(fd);
         state = alloc_fd_state(base, fd);
         assert(state); /*XXX err*/

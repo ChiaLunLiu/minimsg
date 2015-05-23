@@ -79,6 +79,7 @@ typedef struct _msg_state{
  * frame API
  * ---------------------- 
  */
+ int frame_truesize(const frame_t* f);
 int frame_transfer_byte(const frame_t* f);
 const char* frame_content(const frame_t* f);
 int frame_send(int sock,frame_t* f);
