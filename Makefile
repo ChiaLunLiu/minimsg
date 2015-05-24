@@ -2,6 +2,7 @@ DEBUG=
 all:
 	gcc test_client.c minimsg.c queue.c ringbuffer.c -o client -O2 -levent
 	gcc test_server.c minimsg.c queue.c ringbuffer.c -o server -O2 -levent
+	gcc test_blocking_server.c minimsg.c queue.c ringbuffer.c -o blocking_server -O2 -levent
 ringbuf:
 	gcc ringbuffer_test.c ringbuffer.c -g
 debug:

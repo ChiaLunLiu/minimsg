@@ -1,25 +1,17 @@
 #include "queue.h"
 #include<stdio.h>
 #include<stdlib.h>
-queue_t* queue_alloc( void(*func)(void* ) )
+queue_t* queue_alloc(  )
 {
 	queue_t * q = malloc( sizeof(queue_t));
 	if(!q)return NULL;
 	q->front = q->end = NULL;
-	q->free_func = func;
 	q->number = 0;
 	return q;
 }
 void queue_free(queue_t* q)
 {
-	qnode_t* qn,*tmp;
-	qn = q->front;
-	for(qn = q->front ; qn ; ){
-		tmp = qn;
-		qn = qn->next;
-		q->free_func( tmp->data);
-		free(tmp);
-	}
+	/* memory leak of queue element */
 	free(q);
 }
 int queue_push(queue_t* q,void* data)
@@ -44,13 +36,19 @@ int queue_push(queue_t* q,void* data)
 void* queue_pop(queue_t* q)
 {
 	qnode_t * qn;
+	void* r;
 	if(q->front){
 		if(q->front == q->end ) q->end = NULL;
 		qn = q->front;
 		q->front = qn->next;
-		qn->next= NULL;
+		r = qn->data;
 		q->number--;
-		return qn;
+		free(qn);
+		return r;
 	}
 	return NULL;
+}
+inline int queue_size(queue_t* q)
+{
+	return q->number;
 }

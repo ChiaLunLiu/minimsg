@@ -18,10 +18,9 @@ struct _queue{
 	qnode_t * front;
 	qnode_t * end;
 	int number;
-	void(*free_func)(void* ptr);
 };
-
-queue_t* queue_alloc( void(*)(void* ptr) );
+inline int queue_size(queue_t* q);
+queue_t* queue_alloc( );
 void queue_free(queue_t* q);
 int queue_push(queue_t* q,void* data);
 void* queue_pop(queue_t* q);

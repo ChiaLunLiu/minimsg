@@ -14,7 +14,6 @@
 #define MINIMSG_STATE_SEND_NUMBER_OF_FRAME 0
 #define MINIMSG_STATE_SEND_FRAME_LENGTH 1
 #define MINIMSG_STATE_SEND_FRAME_CONTENT 2
-#define MINIMSG_STATE_SEND_INIT 4
 /* fsm for non-blocking recv */
 #define MINIMSG_STATE_RECV_NUMBER_OF_FRAME 0
 #define MINIMSG_STATE_RECV_FRAME_LENGTH 1
@@ -43,7 +42,7 @@ struct frame
 typedef struct msg
 {
 	/* length : size of all frames */
-	int length;
+	int length; /* currently not used */
 	int frames;
 	/* linked list structure */
 	queue_t* q;
@@ -68,8 +67,9 @@ typedef struct _msg_state{
 	const char* send_ptr;
 	frame_t* send_frame;
 	int 	 send_byte;
+	int 	 send_content_byte;
 	msg_t*   send_msg;
-
+	queue_t* send_q;
 }fd_state_t;
 
 
@@ -83,7 +83,12 @@ typedef struct _msg_state{
 int frame_transfer_byte(const frame_t* f);
 const char* frame_content(const frame_t* f);
 int frame_send(int sock,frame_t* f);
-/* frame_recv would allocate memory for frame */
+/* 
+ * frame_recv would allocate memory for frame 
+ * when the return value is
+ *   MINIMSG_OK   : 
+ *   MINIMSG_FAIL : recv <=0 , the caller should close the fd by itself.
+ */
 int frame_recv(int sock,frame_t** f);
 frame_t* frame_alloc(int sz);
 /* '\0' is not appended */
