@@ -8,9 +8,10 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <errno.h>
-
+#include <time.h>
 /* For sockaddr_in */
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 /* For socket functions */
 #include <sys/socket.h>
 /* For fcntl */
@@ -31,12 +32,27 @@
  #define dbg(fmt, args...) do{}while(0)/* Don't do anything in release builds */
 #endif
 
+struct timespec diff(struct timespec start, struct timespec end)
+{
+	struct timespec temp;
+	if ((end.tv_nsec-start.tv_nsec)<0) {
+		temp.tv_sec = end.tv_sec-start.tv_sec-1;
+		temp.tv_nsec = 1000000000+end.tv_nsec-start.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
+}
+
+
 //static int (*g_callback)(msg_t* );
 
 static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd);
 static void free_fd_state(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
-static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
+static int msg_send_nb(evutil_socket_t fd, short events, void *arg);
+static void msg_send_available(evutil_socket_t fd, short events, void *arg);
 
 
 
@@ -313,15 +329,120 @@ void msg_print(const msg_t * m)
 //		printf("%s\n",reply);
 	}	
 }
-static void msg_send_nb(evutil_socket_t fd, short events, void *arg)
+static void msg_send_available(evutil_socket_t fd, short events, void *arg)
 {
-	int leave = 0;
+	fd_state_t* fds = (fd_state_t*)arg;
+	printf("%s\n",__func__);
+	switch ( msg_send_nb(fd,events,arg)){
+		case MINIMSG_SEND_BLOCK:
+				event_add(fds->write_event, NULL);
+		break;
+		case MINIMSG_OK:
+		/* do nothing */
+		break;
+		case MINIMSG_FAIL:
+		//TODO
+		break;
+		
+	}	
+}
+static int msg_send_nb2(evutil_socket_t fd, short events, void *arg)
+{
+	
+	int r=0;
+	fd_state_t* fds = (fd_state_t*)arg;
+	int sock;
+	int sent_byte = 0;
+	frame_t* f;
+	char* ptr;
+	int total;
+	sock = fds->sock;
+	fprintf(stderr,"%s\n",__func__);
+	fprintf(stderr,"state : %d\n",fds->send_state);
+	
+	if(fds->send_state == 1) goto stage1;
+	else if(fds->send_state == 2)goto stage2;
+	else if(fds->send_state == 15)goto stage15;
+	
+	
+stage0:
+	dbg("state0\n");
+	
+	fds->send_msg  = queue_pop(fds->send_q);
+	if(fds->send_msg == NULL) return MINIMSG_OK;
+	fds->send_msg->frames = htonl(fds->send_msg->frames);
+	fds->send_buf = fds->send_msg->frames;
+	fds->send_frame = msg_pop_frame(fds->send_msg);
+	if(fds->send_frame == NULL){
+		dbg("null send_frame\n");
+	}
+	fds->send_ptr = (char*)&(fds->send_buf);
+	fds->send_byte = 0;
+	
+stage1:
+	dbg("state1\n");
+	while(fds->send_byte < 4){
+		r = send(sock,fds->send_ptr+fds->send_byte,4 - fds->send_byte,0);
+		if(r <= 0 ){
+				if(r == 0)  return MINIMSG_FAIL;
+				if(errno == EINTR)continue;
+				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
+					fds->send_state = 1;
+						return MINIMSG_SEND_BLOCK;
+				}	
+				else return MINIMSG_FAIL;				
+		}
+		fds->send_byte+=r;
+	};
+
+stage15:
+	dbg("state15\n");
+	fds->send_state = 2;
+	fds->send_content_byte = fds->send_frame->length + 4;
+	fds->send_frame->length = htonl(fds->send_frame->length);
+	fds->send_byte = 0;
+	fds->send_ptr = (char*)&(fds->send_frame->length);
+	dbg("frame content size : %d,%d\n",fds->send_content_byte,fds->send_frame->length);
+stage2:
+	dbg("state2\n");
+	while(fds->send_byte < fds->send_content_byte){	
+		r = send(sock,fds->send_ptr+fds->send_byte,fds->send_content_byte - fds->send_byte,0);
+		if(r <= 0 ){
+				if(r == 0)  return MINIMSG_FAIL;
+				if(errno == EINTR)continue;
+				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
+						fds->send_state = 2;
+						return MINIMSG_SEND_BLOCK;
+				}	
+				else return MINIMSG_FAIL;				
+		}
+		fds->send_byte+=r;
+	}
+	fds->send_frame = msg_pop_frame(fds->send_msg);
+	if(fds->send_frame == NULL){	
+		fds->send_state = 0;
+		goto stage0;
+	}
+	else goto stage15;
+	
+	return MINIMSG_OK;
+	
+}
+
+
+static int msg_send_nb(evutil_socket_t fd, short events, void *arg)
+{
+	//TODO
+	// free memory when fail
 	fd_state_t* fds = (fd_state_t*)arg;
 	int r=0;
 	int len;
-	
-	while(leave == 0){
-
+	struct timespec tt1, tt2;
+	float acc;
+	char buf[256];
+//	printf("%s\n",__func__);
+	while(1){
+//		printf("in while\n");
 		if(fds->send_state == MINIMSG_STATE_SEND_NUMBER_OF_FRAME  ){
 			dbg("init .....\n");
 			if(fds->send_ptr == NULL){
@@ -333,98 +454,119 @@ static void msg_send_nb(evutil_socket_t fd, short events, void *arg)
 					fds->send_byte = 0;
 				}
 				else {
-					dbg("delete event\n");
-					event_del(fds->write_event);
-					return;
+				//	printf("finish %s\n",__func__);
+					return MINIMSG_OK;
 				}
 			}
 		}
 		
 	 switch(fds->send_state){	
 		case MINIMSG_STATE_SEND_NUMBER_OF_FRAME:
+			  
 		    dbg("state => MINIMSG_STATE_SEND_NUMBER_OF_FRAME\n");
-			r=send(fds->sock,fds->send_ptr+ fds->send_byte,4 - fds->send_byte,0);
-			dbg("send %d byte\n",r);
-			if(r <= 0){
-				/* the other end close the connection */
-				perror("what");
-				if(r == 0)  goto fail;
-				if(errno == EINTR)continue;
-				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
-					leave = 1;
+		    clock_gettime(CLOCK_REALTIME, &tt1);
+		    printf("send %d \n",r);
+				ringbuffer_push_data(fds->rb_send,&fds->send_ptr,4);
+/*			while(fds->send_byte < 4 ){
+				r=send(fds->sock,fds->send_ptr+ fds->send_byte,4 - fds->send_byte,0);
+				if(r <= 0){
+					// the other end close the connection
+					if(r == 0)  goto fail;
+	
+					if(errno == EINTR)continue;
+					else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
+						return MINIMSG_SEND_BLOCK;
+					}	
+					else goto fail; 
 				}
-				else goto fail; 
+
+				fds->send_byte+=r;
+				//printf("in %d\n",fds->send_byte);
 			}
-			else if(r + fds->send_byte == 4){
-				fds->send_frame = msg_pop_frame(fds->send_msg);
+*/				
+			clock_gettime(CLOCK_REALTIME, &tt2);
+			  acc = ( tt2.tv_sec - tt1.tv_sec )
+			+ ( tt2.tv_nsec - tt1.tv_nsec )
+				/ 1000000000.0;
+			printf( "%lf\n", acc );
+			fds->send_frame = msg_pop_frame(fds->send_msg);
+			fds->send_content_byte = fds->send_frame->length;
+			fds->send_frame->length = htonl(fds->send_frame->length);
+			fds->send_ptr = (char*)&fds->send_frame->length;
+			fds->send_byte = 0;
+			fds->send_state = MINIMSG_STATE_SEND_FRAME_LENGTH;
+			  
+	
+		break;
+		case MINIMSG_STATE_SEND_FRAME_LENGTH:
+		 clock_gettime(CLOCK_REALTIME, &tt1);
+			dbg("state => MINIMSG_STATE_SEND_FRAME_LENGTH\n");
+			ringbuffer_pop_data(fds->rb_send,buf+0,4);
+			send(fds->sock,buf,4,0);
+			while((fds->send_byte !=4) && ((r=send(fds->sock,fds->send_ptr+ fds->send_byte,4 - fds->send_byte,0)) > 0)){
+				fds->send_byte+=r;
+			}
+			if(fds->send_byte != 4){
+				if(r <= 0){
+					/* the other end close the connection */
+					if(r == 0)  goto fail;
+	
+					if(errno == EINTR)continue;
+					else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
+						return MINIMSG_SEND_BLOCK;
+					}	
+					else goto fail; 
+				}
+			}
+			fds->send_ptr = frame_content(fds->send_frame);
+			fds->send_byte = 0;
+			fds->send_state = MINIMSG_STATE_SEND_FRAME_CONTENT;
+			clock_gettime(CLOCK_REALTIME, &tt2);
+			  acc = ( tt2.tv_sec - tt1.tv_sec )
+			+ ( tt2.tv_nsec - tt1.tv_nsec )
+				/ 1000000000.0;
+							printf( "%lf\n", acc );
+
+		break;
+		case MINIMSG_STATE_SEND_FRAME_CONTENT:
+		 clock_gettime(CLOCK_REALTIME, &tt1);
+		dbg("state => MINIMSG_STATE_SEND_FRAME_CONTENT\n");
+			len = 	fds->send_content_byte ;
+			while((fds->send_byte !=len) &&  ((r=send(fds->sock,fds->send_ptr+ fds->send_byte,len - fds->send_byte,0))>0)){
+					fds->send_byte+=r;
+			}
+			if(fds->send_byte != len){
+				if(r <= 0){
+					/* the other end close the connection */
+					if(r == 0)  goto fail;
+	
+					if(errno == EINTR)continue;
+					else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
+						return MINIMSG_SEND_BLOCK;
+					}	
+					else goto fail; 
+				}
+			}
+		clock_gettime(CLOCK_REALTIME, &tt2);
+			  acc = ( tt2.tv_sec - tt1.tv_sec )
+			+ ( tt2.tv_nsec - tt1.tv_nsec )
+				/ 1000000000.0;
+			printf( "%lf\n", acc );
+
+			fds->send_frame = msg_pop_frame(fds->send_msg);
+			
+			/* end of frame */
+			if(fds->send_frame == NULL){
+				fds->send_ptr = NULL;					
+				fds->send_state = MINIMSG_STATE_SEND_NUMBER_OF_FRAME;
+				msg_free(fds->send_msg);
+			}
+			else{
 				fds->send_content_byte = fds->send_frame->length;
 				fds->send_frame->length = htonl(fds->send_frame->length);
 				fds->send_ptr = (char*)&fds->send_frame->length;
 				fds->send_byte =0;
 				fds->send_state = MINIMSG_STATE_SEND_FRAME_LENGTH;
-			}
-			else{
-				fds->send_byte+=r;
-				leave = 1;
-			}
-		break;
-		case MINIMSG_STATE_SEND_FRAME_LENGTH:
-			dbg("state => MINIMSG_STATE_SEND_FRAME_LENGTH\n");
-			r=send(fds->sock,fds->send_ptr+ fds->send_byte,4 - fds->send_byte,0);
-			if(r <= 0){
-				/* the other end close the connection */
-				if(r == 0)  goto fail;
-
-				if(errno == EINTR)continue;
-				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
-					leave = 1;
-				}
-				else goto fail; 
-			}
-			else if(r + fds->send_byte == 4){
-				fds->send_ptr = frame_content(fds->send_frame);
-				fds->send_byte = 0;
-				fds->send_state = MINIMSG_STATE_SEND_FRAME_CONTENT;
-			}else{
-				fds->send_byte+=r;
-				leave =1;
-			}	
-		break;
-		case MINIMSG_STATE_SEND_FRAME_CONTENT:
-		dbg("state => MINIMSG_STATE_SEND_FRAME_CONTENT\n");
-			len = 	fds->send_content_byte ;
-			r=send(fds->sock,fds->send_ptr+ fds->send_byte,len - fds->send_byte,0);
-			if(r <= 0){
-				/* the other end close the connection */
-				if(r == 0)  goto fail;
-
-				if(errno == EINTR)continue;
-				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
-					leave = 1;
-				}
-				else goto fail; 
-			}
-
-			else if( r + fds->send_byte == len) {
-				fds->send_frame = msg_pop_frame(fds->send_msg);
-
-				/* end of frame */
-				if(fds->send_frame == NULL){
-					fds->send_ptr = NULL;					
-					fds->send_state = MINIMSG_STATE_SEND_NUMBER_OF_FRAME;
-					msg_free(fds->send_msg);
-				}
-				else{
-					fds->send_content_byte = fds->send_frame->length;
-					fds->send_frame->length = htonl(fds->send_frame->length);
-					fds->send_ptr = (char*)&fds->send_frame->length;
-					fds->send_byte =0;
-					fds->send_state = MINIMSG_STATE_SEND_FRAME_LENGTH;
-				}
-			}
-			else{
-				fds->send_byte+=r;
-				leave =1;
 			}
 		break;
 		default:
@@ -433,11 +575,12 @@ static void msg_send_nb(evutil_socket_t fd, short events, void *arg)
 		break;
 	  }
 	}
-	return;
+	return MINIMSG_OK;
 	
 fail:
 /* let msg_recv_nb to do fd_state_free */
 	dbg("fail\n");
+	return MINIMSG_FAIL;
 }
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 {
@@ -526,12 +669,25 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 					//TODO
 					// execute callback
 					//msg_print(fds->recv_msg);
-					static int debug = 0;
-					printf("get %d\n",debug++);
+					//static int debug = 0;
+					//printf("get %d\n",debug++);
+					//msg_send(fds->sock,fds->recv_msg);
 					queue_push(fds->send_q,fds->recv_msg);
-				//	if( !event_pending(fds->write_event, EV_WRITE,NULL) )
-						event_add(fds->write_event, NULL);
-					//else printf("pending event : %d\n",queue_size(fds->send_q));	
+					switch ( msg_send_nb2(fd,events,arg)){
+						case MINIMSG_SEND_BLOCK:
+							printf("send block\n");
+							if( !event_pending(fds->write_event, EV_WRITE,NULL) )
+								event_add(fds->write_event, NULL);
+						break;
+						case MINIMSG_OK:
+							printf("send a frame back\n");
+						// do nothing 
+						break;
+						case MINIMSG_FAIL:
+						//TODO
+						break;
+						
+					}
 				}
 				else
 					fds->recv_state = MINIMSG_STATE_RECV_FRAME_LENGTH;
@@ -632,7 +788,7 @@ alloc_fd_state(struct event_base *base, evutil_socket_t fd)
         return NULL;
     }
     state->write_event =
-        event_new(base, fd, EV_WRITE|EV_PERSIST, msg_send_nb, state);
+        event_new(base, fd, EV_WRITE, msg_send_available, state);
 
     if (!state->write_event) {
         event_free(state->read_event);
@@ -652,7 +808,7 @@ alloc_fd_state(struct event_base *base, evutil_socket_t fd)
 	state->recv_current_frame_byte = 0;
 	state->recv_msg = NULL;
 	
-	state->send_state = MINIMSG_STATE_SEND_NUMBER_OF_FRAME;
+	state->send_state = 0;//MINIMSG_STATE_SEND_NUMBER_OF_FRAME;
 	state->send_frame = NULL;
 	state->send_ptr = NULL;
 	state->send_byte = 0;
@@ -673,6 +829,7 @@ static void do_accept(evutil_socket_t listener, short event, void *arg)
     struct sockaddr_storage ss;
     socklen_t slen = sizeof(ss);
     fd_state_t *state;
+    int one=1;
     int fd = accept(listener, (struct sockaddr*)&ss, &slen);
     if (fd < 0) { // XXXX eagain??
         perror("accept");
@@ -680,6 +837,7 @@ static void do_accept(evutil_socket_t listener, short event, void *arg)
         close(fd); // XXX replace all closes with EVUTIL_CLOSESOCKET */
     } else {
 	printf("accept a new fd\n");
+		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         evutil_make_socket_nonblocking(fd);
         state = alloc_fd_state(base, fd);
         assert(state); /*XXX err*/

@@ -46,6 +46,7 @@ int main(int argc,char** argv)
 			}
 			else printf("send FAIL\n");
 			printf("after send frame\n");
+			m = NULL;
 			if(msg_recv(sock,&m) == MINIMSG_OK){
 				msg_print(m);
 				msg_free(m);
@@ -53,6 +54,13 @@ int main(int argc,char** argv)
 			else printf("recv fail\n");
 		
 		}
+	/*	for(i=0;i<1000;i++){
+			printf("recv frame %d\n",i);
+			if(msg_recv(sock,&m) == MINIMSG_OK){
+				msg_print(m);
+				msg_free(m);
+			}
+		}*/
 	close(sock);
 	
 	return 0;

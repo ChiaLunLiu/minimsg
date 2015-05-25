@@ -7,7 +7,7 @@
 #define MINIMSG_OK 2
 #define MINIMSG_FAIL 3
 #define MINIMSG_SEND_COMPLETE 4
-
+#define MINIMSG_SEND_BLOCK 5
 #define MINIMSG_MSGSERVER_BUFFER_SIZE 2048
 
 /* fsm for non-blocking send */
@@ -70,6 +70,7 @@ typedef struct _msg_state{
 	int 	 send_content_byte;
 	msg_t*   send_msg;
 	queue_t* send_q;
+	int      send_buf;
 }fd_state_t;
 
 
