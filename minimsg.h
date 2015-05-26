@@ -2,8 +2,7 @@
 #define __MINIMSG_H__
 #include "ringbuffer.h"
 #include "queue.h"
-#define OK   0
-#define FAIL 1
+#include <event2/event.h>
 #define MINIMSG_OK 2
 #define MINIMSG_FAIL 3
 #define MINIMSG_SEND_COMPLETE 4
@@ -114,9 +113,7 @@ int msg_recv(int sock,msg_t** m);
 /* non-blocking API */
 /* send message stored in fds-> m */
 
-/* ------------------------------
- * msg server 
- * ------------------------------
- */
-void runMsgServer(unsigned port,int (*callback)(msg_t* ));
+
+/* other */
+void do_accept(evutil_socket_t listener, short event, void *arg);
 #endif
