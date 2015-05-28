@@ -24,6 +24,12 @@
 struct frame;
 typedef struct frame frame_t;
 
+typedef struct event_arg
+{
+	void*base; /* event base */
+	int create_thread; /* 0: don't call thread to handle msg ; > 0: create thread */
+}event_arg_t;
+
 
 struct frame
 {
@@ -70,8 +76,17 @@ typedef struct _msg_state{
 	msg_t*   send_msg;
 	queue_t* send_q;
 	int      send_buf;
+	/* callback */
+	void*(*cb)(void*);
 }fd_state_t;
 
+typedef _msg_server{
+	int sock; /* listener sock */
+	thpool_t* thp;
+	struct event * listener_event;
+	void*(*cb)(void*);
+	struct event** thread_pool_event;
+}msg_server_t;
 
 
 
@@ -116,4 +131,6 @@ int msg_recv(int sock,msg_t** m);
 
 /* other */
 void do_accept(evutil_socket_t listener, short event, void *arg);
+void run_msg_server(void* base,int port, (void*)(*cb)(void* arg), int threads);
+void free_msg_server(msg_server_t* server);
 #endif

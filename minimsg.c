@@ -1,6 +1,7 @@
 #include "minimsg.h"
 #include "queue.h"
 #include "ringbuffer.h"
+#include "thread_pool.h"
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -685,6 +686,7 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
+    event_arg_t* a = (event_arg_t*) arg;
     socklen_t slen = sizeof(ss);
     fd_state_t *state;
     int one=1;
@@ -697,11 +699,63 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 	printf("accept a new fd\n");
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         evutil_make_socket_nonblocking(fd);
-        state = alloc_fd_state(base, fd);
+        state = alloc_fd_state(a->base, fd);
         assert(state); /*XXX err*/
         assert(state->write_event);
         event_add(state->read_event, NULL);
     }
 }
+static void do_queue_recv(msg_t* m)
+{
+	
+}
 
+msg_server_t* run_msg_server(void* base,int port, (void*)(*cb)(void* arg), int threads)
+{
+	msg_server_t* server;
+	int i;
+	struct event *listener_event;
+	struct sockaddr_in sin;
+	evutil_socket_t listener;
+    listener = socket(AF_INET, SOCK_STREAM, 0);
+    evutil_make_socket_nonblocking(listener);
 
+    int one = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
+        perror("bind");
+        return NULL;
+    }
+
+    if (listen(listener, 16)<0) {
+        perror("listen");
+        return NULL;
+    }
+    server = malloc( sizeof( msg_server_t ));
+    if(!server)return NULL;
+    
+    
+    
+    listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)&(arg) );
+    /*XXX check it */
+    event_add(listener_event, NULL);
+
+   server->cb = cb;
+   server->base = base;
+   server->sock = listener;
+   server->thp = thread_pool_alloc(threads, cb );
+   server->thread_pool_event = malloc( sizeof( struct event* )* threads);
+   
+   for(i=0;i<threads ;i++){
+		server->thread_pool_event[i] = event_new(base,server->thp[i]->efd,EV_READ | EV_PERSIST, do_queue_recv, (void*)server);
+   }
+    return server;
+}
+void free_msg_server(msg_server_t* server)
+{
+	close(server->sock);
+	event_free(server->read_event);
+	thread_destroy(server->thp);
+	free(server);
+}
