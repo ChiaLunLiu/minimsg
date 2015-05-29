@@ -34,7 +34,7 @@ int main(int argc,char** argv)
 	}
 	puts("Connected");
 		/* message testing */
-		for(i = 0 ;i < 10000; i++){
+		for(i = 0 ;i < 10; i++){
 	//		printf("frame %d\n",i);
 			m = msg_alloc();
 			msg_append_string(m,"frame 1");
@@ -48,10 +48,10 @@ int main(int argc,char** argv)
 		
 		}
 		printf("start receiving ...\n");
-		for(i=0;i<10000;i++){
+		for(i=0;i<10;i++){
 			printf("recv frame %d\n",i);
 			if(msg_recv(sock,&m) == MINIMSG_OK){
-		//		msg_print(m);
+				msg_print(m);
 				msg_free(m);
 			}
 			else printf("recv FAIL\n");

@@ -1,3 +1,20 @@
+msg_recv_nb
+|
+| -----> schedule (msg,fds) to thread pool
+
+
+thread in pool
+|
+| -----> get(msg,fds) execute msg wrapper
+                  |
+                  | -----> pass msg and execute task, it return msg or NULL
+                  | -----> send (msg,fd) to thread pool queue, and write to eventfd
+
+
+main thread
+|
+| -----> 
+
 
 1. need a static fixed-size ring buffer for recv, dynamic allocation is 'too' slow for recv. 
 2. A session may contain many request, a single request should not consume more than the fixed-size buffer.

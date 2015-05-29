@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <signal.h>
 #include <errno.h>
 /* For sockaddr_in */
 #include <netinet/in.h>
@@ -32,14 +33,22 @@
  #define dbg(fmt, args...) do{}while(0)/* Don't do anything in release builds */
 #endif
 
+typedef struct _server_thread_data{
+	void* msg;
+	fd_state_t* fds;
+	msg_server_t* server;
+}server_thread_data_t;
 
 
 
-static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd);
+
+static fd_state_t * alloc_fd_state(msg_server_t* server, evutil_socket_t fd);
 static void free_fd_state(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
 static void free_fd_state_send(fd_state_t * fds);
+static void* msg_server_thread_task_wrapper(void* arg);
+static void sigusr1_func(evutil_socket_t fd, short event, void *arg);
 
 
 
@@ -244,19 +253,6 @@ frame_t* msg_pop_frame(msg_t* m)
 	}
 	return NULL;
 }
-frame_t* msg_front_frame(msg_t* m)
-{
-	frame_t* f;
-	if(m->front){
-		if(m->front == m->end ) m->end = NULL;
-		f = m->front;
-		m->front = m->front->next;
-		f->next= NULL;
-		m->frames--;
-		return f;
-	}
-	return NULL;
-}
 int msg_recv(int sock,msg_t** m)
 {
 	int r = 0;
@@ -269,7 +265,7 @@ int msg_recv(int sock,msg_t** m)
 	dbg("[debug]: start length ...");
 	while(recv_byte < 4){
 		r=recv(sock,ptr + recv_byte ,4 - recv_byte,0);
-//		printf("r:%d\n",r);
+		dbg("r:%d\n",r);
 		
 		if(r == 0)return MINIMSG_FAIL;
 		else if(r<0){
@@ -449,11 +445,13 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 	ringbuffer_t * rb ;
 	int copy;
 	char* dst;
+	server_thread_data_t * qdata;
 	fd_state_t* fds = (fd_state_t*)arg;
 	rb = fds->rb_recv;
 	int leave ;
 	int result;
 	char buf[256];
+	msg_server_t* server = fds->server;
 	dbg("%s\n",__func__);
 	
 	
@@ -464,7 +462,7 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 		result=recv(fds->sock,buf,copy,0);
 		if(result<=0){
 			if(result <0 && errno == EINTR)continue;
-			perror("recv");
+			if(result < 0)	perror("msg_recv_nb recv");
 			break;
 		}
 		dbg("push %d bytes\n",result);
@@ -528,13 +526,35 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 					/* a complete message is received */
 					fds->recv_state = MINIMSG_STATE_RECV_NUMBER_OF_FRAME;
 					if(fds->send_state != -1){
-						queue_push(fds->send_q,fds->recv_msg);
-						event_add(fds->write_event, NULL);
+						/* send it to thread pool */
+						/* if server does not have thread pool , handle the msg itself */
+						if(!server->thp){
+							//TODO
+							dbg("not implemented yet\n");
+							exit(0);
+						}
+						else{
+					/*		qdata = malloc( sizeof( server_thread_data_t));
+							if(!qdata){
+								dbg("fail to alloc\n");			
+							}
+							else{
+								qdata->msg = fds->recv_msg;
+								fds->recv_msg = NULL;
+								fds->refcnt++;
+								qdata->fds = fds;
+								qdata->server = server;
+								thread_pool_schedule_task(server->thp,msg_server_thread_task_wrapper,(void*)qdata);
+							}
+						*/}
+						msg_free(fds->recv_msg);
+						fds->recv_msg = NULL;
 					}
 					else{
 						/* sending is closed */
 						dbg("send is closed\n");
 						msg_free(fds->recv_msg);
+						fds->recv_msg = NULL;
 					}
 				}
 				else
@@ -553,17 +573,18 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 	  } // switch
      }// inner while
 	} // outer while
-	if (result == 0) {  /* disconnect */
-        	free_fd_state(fds);
-    	}else if (result < 0) {  /* error */
-        	if (errno == EAGAIN) // XXXX use evutil macro
-        	    return;
-        	perror("recv");
-        	free_fd_state(fds);
+	if (result <= 0) {  /* disconnect */
+		if(result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+    		if(result == 0)dbg("disconnect\n");
+	    	free_fd_state(fds);
     	}
 	return;	
 fail:
 	printf("fail\n");
+	if(fds->recv_msg){
+		msg_free(fds->recv_msg);
+		fds->recv_msg = NULL;
+	}
 	free_fd_state(fds);
 	//TODO
 }
@@ -614,30 +635,44 @@ do_read(evutil_socket_t fd, short events, void *arg)
     }
 }
 */
+/* fd_state_t may be passed to other threads and passed back
+ * but, when the connection is closed, the thread in charge of network I/O would
+ * free it, but it should only free it when fd_state_t is not referenced by threads
+ * in thread pool
+ * no lock is needed here because only one thread deals with its memory.
+ */
 static void free_fd_state(fd_state_t *state)
 {
-   dbg("\n");
-    event_free(state->read_event);
-    event_free(state->write_event);
-    close(state->sock);
-    ringbuffer_destroy(state->rb_recv);
-    ringbuffer_destroy(state->rb_send);
-    queue_free(state->send_q);
-    free(state);
+    dbg("\n");
+    state->refcnt--;
+    if(state->refcnt == 0){
+    	event_free(state->read_event);
+    	event_free(state->write_event);
+    	close(state->sock);
+    	ringbuffer_destroy(state->rb_recv);
+    	ringbuffer_destroy(state->rb_send);
+    	queue_free(state->send_q);
+    	free(state);
+    }
 }
 
 static void free_fd_state_send(fd_state_t * fds)
 {
+	msg_t* m;
 	fds->send_state = -1;
 	if(fds->send_msg){
 		msg_free(fds->send_msg);
 		fds->send_msg = NULL;
 	}
+	while(  m = queue_pop(fds->send_q) ){
+		msg_free(m);	
+	}
 	shutdown(fds->sock,SHUT_WR);
 
 }
-static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd)
+static fd_state_t * alloc_fd_state(msg_server_t* server, evutil_socket_t fd)
 {
+    struct event_base* base = server->base;
     fd_state_t *state = malloc(sizeof(fd_state_t));
     if (!state)
         return NULL;
@@ -656,7 +691,8 @@ static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd)
     }
 
     state->sock = fd;
-    assert(state->write_event);
+    state->refcnt = 1;
+    state->server = server;
     
 	state->rb_recv = ringbuffer_alloc(MINIMSG_MSGSERVER_BUFFER_SIZE);
 	state->rb_send = ringbuffer_alloc(MINIMSG_MSGSERVER_BUFFER_SIZE);
@@ -667,7 +703,7 @@ static fd_state_t * alloc_fd_state(struct event_base *base, evutil_socket_t fd)
 	state->recv_current_frame_byte = 0;
 	state->recv_msg = NULL;
 	
-	state->send_state = 0;//MINIMSG_STATE_SEND_NUMBER_OF_FRAME;
+	state->send_state = 0;
 	state->send_frame = NULL;
 	state->send_ptr = NULL;
 	state->send_byte = 0;
@@ -686,7 +722,7 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 {
     struct event_base *base = arg;
     struct sockaddr_storage ss;
-    event_arg_t* a = (event_arg_t*) arg;
+    msg_server_t* server =(msg_server_t*) arg;
     socklen_t slen = sizeof(ss);
     fd_state_t *state;
     int one=1;
@@ -699,26 +735,93 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 	printf("accept a new fd\n");
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         evutil_make_socket_nonblocking(fd);
-        state = alloc_fd_state(a->base, fd);
+        state = alloc_fd_state(server, fd);
         assert(state); /*XXX err*/
         assert(state->write_event);
         event_add(state->read_event, NULL);
     }
 }
-static void do_queue_recv(msg_t* m)
+/* This function is called when thread sends result back */
+static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short events, void *arg)
 {
+	dbg("\n");
+	msg_server_t *m ;
+	/* read from result queue and send to network */
+	ssize_t s;
+	uint64_t u;
+	int i;
+	fd_state_t* fds;
+	server_thread_data_t* qdata;
+	m = (msg_server_t*) arg;
+ 
+	s = read(fd, &u, sizeof(uint64_t));
+        if (s != sizeof(uint64_t)){
+               perror("read");
+		return;
+        }
+        printf("task:%d\n",u);
+        for(i = 0;  i< u ; i++){
+		pthread_spin_lock(&m->thp->qlock);
+                	qdata = (server_thread_data_t*) queue_pop(m->thp->q);
+             	pthread_spin_unlock(&m->thp->qlock);
+		fds = qdata->fds;
+		if(fds->send_state != -1){
+			msg_print(qdata->msg);
+                	queue_push(fds->send_q,qdata->msg);
+			fprintf(stderr,"before adding event\n");
+			if(fds->write_event == NULL){
+				fprintf(stderr,"null event\n");
+			}
+			else
+               		event_add(fds->write_event, NULL);
+			fprintf(stderr,"after adding event\n");
+        	}
+		else{
+			msg_free(qdata->msg);
+		}
+		free(qdata);
+		free_fd_state(fds);
+		
+        }	
+}
+static void* msg_server_thread_task_wrapper(void* arg)
+{
+	server_thread_data_t * d = (server_thread_data_t*)arg;
+
+	msg_print(d->msg);
+	fflush(stdout);
+	dbg("called\n");
+	void* r;
 	
+	if(d->server->cb == NULL){
+		fprintf(stderr,"callback null\n");
+		return NULL;	
+	}
+	r = d->server->cb(d->msg);
+	
+	if(!r){
+		free_fd_state(d->fds);
+		free(d);
+		return NULL;
+	}
+	d->msg = r;
+	return d;		
 }
 
-msg_server_t* run_msg_server(void* base,int port, (void*)(*cb)(void* arg), int threads)
+msg_server_t* create_msg_server(void* base,int port, void*(*cb)(void* arg), int threads)
 {
 	msg_server_t* server;
 	int i;
 	struct event *listener_event;
+	struct event *thread_event;
+	struct event *sigusr1_event;
 	struct sockaddr_in sin;
 	evutil_socket_t listener;
     listener = socket(AF_INET, SOCK_STREAM, 0);
     evutil_make_socket_nonblocking(listener);
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = 0;
+    sin.sin_port = htons(port);
 
     int one = 1;
     setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -735,27 +838,36 @@ msg_server_t* run_msg_server(void* base,int port, (void*)(*cb)(void* arg), int t
     server = malloc( sizeof( msg_server_t ));
     if(!server)return NULL;
     
-    
-    
-    listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)&(arg) );
+    server->cb = cb; 
+    server->sock = listener;
+    server->thp = thread_pool_alloc(threads );
+    server->base = base;
+    listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)server );
+    thread_event = event_new(base, server->thp->efd, EV_READ|EV_PERSIST, msg_server_read_result_from_thread_pool, (void*)server );
+    sigusr1_event = evsignal_new(base,SIGUSR1,sigusr1_func,(void*)server);
     /*XXX check it */
+    event_add(sigusr1_event,NULL);
     event_add(listener_event, NULL);
-
-   server->cb = cb;
-   server->base = base;
-   server->sock = listener;
-   server->thp = thread_pool_alloc(threads, cb );
-   server->thread_pool_event = malloc( sizeof( struct event* )* threads);
-   
-   for(i=0;i<threads ;i++){
-		server->thread_pool_event[i] = event_new(base,server->thp[i]->efd,EV_READ | EV_PERSIST, do_queue_recv, (void*)server);
-   }
+    event_add(thread_event, NULL);
+    server->thread_event = thread_event;
+    server->listener_event = listener_event;
+    server->sigusr1_event = sigusr1_event;
     return server;
 }
 void free_msg_server(msg_server_t* server)
 {
 	close(server->sock);
-	event_free(server->read_event);
-	thread_destroy(server->thp);
+	fprintf(stderr,"free thread pool destroy\n");
+	thread_pool_destroy(server->thp);
+	event_free(server->thread_event);
+	event_free(server->listener_event);
+	event_free(server->sigusr1_event);
 	free(server);
+}
+static void sigusr1_func(evutil_socket_t fd, short event, void *arg)
+{
+	msg_server_t* server = (msg_server_t*)arg;
+	printf("%s: got signal\n",__func__);	
+	event_base_dump_events(server->base,stdout);
+    	free_msg_server(server);
 }

@@ -1,6 +1,7 @@
 #ifndef __MINIMSG_H__
 #define __MINIMSG_H__
 #include "ringbuffer.h"
+#include "thread_pool.h"
 #include "queue.h"
 #include <event2/event.h>
 #define MINIMSG_OK 2
@@ -23,6 +24,8 @@
 
 struct frame;
 typedef struct frame frame_t;
+struct _msg_server;
+typedef struct _msg_server msg_server_t;
 
 typedef struct event_arg
 {
@@ -76,17 +79,20 @@ typedef struct _msg_state{
 	msg_t*   send_msg;
 	queue_t* send_q;
 	int      send_buf;
-	/* callback */
-	void*(*cb)(void*);
+
+	msg_server_t* server;
+	int refcnt;	
 }fd_state_t;
 
-typedef _msg_server{
+struct _msg_server{
 	int sock; /* listener sock */
 	thpool_t* thp;
 	struct event * listener_event;
-	void*(*cb)(void*);
-	struct event** thread_pool_event;
-}msg_server_t;
+	struct event* thread_event;
+	struct event* sigusr1_event;
+	void*(*cb)(void*);  /* thread task's function */
+	void* base;
+};
 
 
 
@@ -116,7 +122,6 @@ void	 frame_free(frame_t* f);
  */
 /* get the current first frame */
 frame_t* msg_pop_frame(msg_t* m);
-frame_t* msg_front_frame(msg_t* m);
 msg_t* msg_alloc();
 void msg_free(msg_t* m);
 void msg_print(const msg_t * m);
@@ -131,6 +136,6 @@ int msg_recv(int sock,msg_t** m);
 
 /* other */
 void do_accept(evutil_socket_t listener, short event, void *arg);
-void run_msg_server(void* base,int port, (void*)(*cb)(void* arg), int threads);
+msg_server_t* create_msg_server(void* base,int port, void*(*cb)(void* arg), int threads);
 void free_msg_server(msg_server_t* server);
 #endif
