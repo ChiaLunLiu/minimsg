@@ -9,9 +9,8 @@
 void* cb(void* arg)
 {
 	msg_t* m = (msg_t*)arg;
-	printf("hi\n");
-	
-//	msg_free(m);
+
+	printf("callback\n");
 	return m;
 }
 int main()
@@ -23,8 +22,8 @@ int main()
     if (!base)
         return; /*XXXerr*/
 
-    if(server = create_msg_server(base,port, cb,2)){
-		puts("server ready");
+    if(server = create_msg_server(base,port, cb,3)){
+		puts("server is initiated");
     }
     else{
 		puts("fail to start server, program will be terminated");
@@ -32,7 +31,7 @@ int main()
     }
     /* infinite loop */
     event_base_dispatch(base); 
-    fprintf(stderr,"finish !!!\n");
+    printf("the server is shut down\n");
     event_base_free(base);
     return 0;
 }

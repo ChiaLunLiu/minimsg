@@ -466,7 +466,7 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 		result=recv(fds->sock,buf,copy,0);
 		if(result<=0){
 			if(result <0 && errno == EINTR)continue;
-			if(result < 0)	perror("msg_recv_nb recv");
+			//if(result < 0)	perror("msg_recv_nb recv");
 			break;
 		}
 		dbg("push %d bytes\n",result);
@@ -749,7 +749,7 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
     } else if (fd > FD_SETSIZE) {
         close(fd); // XXX replace all closes with EVUTIL_CLOSESOCKET */
     } else {
-	printf("accept a new fd\n");
+	dbg("a new connection\n");
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
         evutil_make_socket_nonblocking(fd);
         state = alloc_fd_state(server, fd);
@@ -776,7 +776,6 @@ static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short ev
                perror("read");
 		return;
         }
-        printf("task:%d, queue: %d\n",u,m->thp->q->number);
         for(i = 0;  i< u ; i++){
 		pthread_spin_lock(&m->thp->qlock);
                 	qdata = (server_thread_data_t*) queue_pop(m->thp->q);
@@ -785,7 +784,7 @@ static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short ev
 		free_fd_state(fds);
 		if(fds->send_state != -1){
 			dbg("message to send\n");
-			msg_print(qdata->msg);
+		//	msg_print(qdata->msg);
                 	queue_push(fds->send_q,qdata->msg);
                		event_add(fds->write_event, NULL);
         	}
@@ -800,9 +799,6 @@ static void* msg_server_thread_task_wrapper(void* arg)
 {
 	server_thread_data_t * d = (server_thread_data_t*)arg;
 
-	msg_print(d->msg);
-	fflush(stdout);
-	dbg("called\n");
 	void* r;
 	
 	if(d->server->cb == NULL){
@@ -868,11 +864,10 @@ msg_server_t* create_msg_server(void* base,int port, void*(*cb)(void* arg), int 
 }
 void free_msg_server(msg_server_t* server)
 {
+	event_free(server->listener_event);
 	close(server->sock);
-	fprintf(stderr,"free thread pool destroy\n");
 	thread_pool_destroy(server->thp);
 	event_free(server->thread_event);
-	event_free(server->listener_event);
 	event_free(server->sigusr1_event);
 	free(server);
 }
@@ -880,6 +875,6 @@ static void sigusr1_func(evutil_socket_t fd, short event, void *arg)
 {
 	msg_server_t* server = (msg_server_t*)arg;
 	printf("%s: got signal\n",__func__);	
-	event_base_dump_events(server->base,stdout);
+	//event_base_dump_events(server->base,stdout);
     	free_msg_server(server);
 }

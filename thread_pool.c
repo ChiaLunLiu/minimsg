@@ -38,9 +38,7 @@ static void* do_task(void* arg)
 	thnode_t* th = (thnode_t*)arg;		
 	qelement_t * qe;
 	while(th->active){
-		printf("read %d\n",th->id);
 		s = read(th->efd, &ur, sizeof(uint64_t));
-		printf("read %d done\n",th->id);
         	if (s != sizeof(uint64_t)){
 			th->active = 0;
 			continue;
@@ -145,7 +143,8 @@ void thread_pool_schedule_task(thpool_t* thp, void*(*task)(void*), void* arg)
 	int sz;
 	int tmp;
 	for(i = 0 ;i<thp->thread_num ; i++){
-		if(idx == -1|| sz > (tmp = queue_size( thp->threads[i]->q) )){
+		tmp =  queue_size( thp->threads[i]->q);
+		if(idx == -1|| sz > tmp){
 			idx = i;
 			sz = tmp;
 		}
@@ -155,7 +154,6 @@ void thread_pool_schedule_task(thpool_t* thp, void*(*task)(void*), void* arg)
 
 void thread_pool_assign_task(thpool_t* thp, void*(*task)(void*), void* arg,int no)
 {
-	printf("%s(%d)\n",__func__,no);
 	thnode_t* th = (thnode_t*)thp->threads[no];
 	uint64_t u;
     ssize_t s;
@@ -168,7 +166,6 @@ void thread_pool_assign_task(thpool_t* thp, void*(*task)(void*), void* arg,int n
 	pthread_spin_lock(&th->qlock);
 		queue_push( th->q,(void*)qe); 
 	pthread_spin_unlock(&th->qlock);
-
 	u = 1;
     	s = write(th->efd, &u, sizeof(uint64_t));
     	if (s != sizeof(uint64_t)) handle_error("write");
