@@ -40,9 +40,9 @@ int main(int argc,char** argv)
 			msg_append_string(m,"frame 1");
 			msg_append_string(m,"frame 2");
 			msg_append_string(m,"frame 3");
-		//	msg_print(m);
+			msg_print(m);
 			if(msg_send(sock,m) == MINIMSG_OK){
-				;//printf("send OK\n");
+				printf("send OK\n");
 			}
 			else printf("send FAIL\n");
 		

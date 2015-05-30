@@ -46,7 +46,6 @@ static fd_state_t * alloc_fd_state(msg_server_t* server, evutil_socket_t fd);
 static void free_fd_state(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
-static void free_fd_state_send(fd_state_t * fds);
 static void* msg_server_thread_task_wrapper(void* arg);
 static void sigusr1_func(evutil_socket_t fd, short event, void *arg);
 
@@ -322,19 +321,23 @@ static void msg_send_nb(evutil_socket_t fd, short events, void *arg)
 	char* ptr;
 	int total;
 	sock = fds->sock;
-	dbg("");
 	dbg("state : %d\n",fds->send_state);
 
 	if(fds->send_state == 0)goto stage0;
 	if(fds->send_state == 1) goto stage1;
 	else if(fds->send_state == 2)goto stage2;
 	else if(fds->send_state == 3)goto stage3;
-	else {
+	else if(fds->send_state == -1){
+		dbg("program shouldn't reach here, msg_send_nb is closed\n");
+		return;
+	}
+	else{
 		dbg("[bug]: unknown stage\n");
-		free_fd_state_send(fds);
+		free_fd_state(fds);
 		return;
 	}	
 stage0:
+	fds->send_state = 0;
 	dbg("state0\n");
 	
 	fds->send_msg  = queue_pop(fds->send_q);
@@ -343,16 +346,11 @@ stage0:
 		return;
 	}
 	fds->send_buf = htonl(fds->send_msg->frames);
-	fds->send_frame = msg_pop_frame(fds->send_msg);
-	if(fds->send_frame == NULL){
-		dbg("[bug]: send_frame\n");
-		free_fd_state_send(fds);
-		return;
-	}
 	fds->send_ptr = (char*)&(fds->send_buf);
 	fds->send_byte = 0;
-	
+	dbg("%d frames to send\n",fds->send_msg->frames);	
 stage1:
+	fds->send_state = 1;
 	dbg("state1\n");
 	while(fds->send_byte < 4){
 		r = send(sock,fds->send_ptr+fds->send_byte,4 - fds->send_byte,0);
@@ -361,14 +359,13 @@ stage1:
 					if(errno == EPIPE){
 						/* the other end closes receiving
 						 * flush all sending data */
-						free_fd_state_send(fds);
+						free_fd_state(fds);
 						return;
 					}
 
 				}
 				if(errno == EINTR)continue;
 				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
-					fds->send_state = 1;
 					event_add(fds->write_event, NULL);
 					dbg("sending is blocked, add send event\n");
 					return;
@@ -377,7 +374,7 @@ stage1:
 					/* other error 
 					 * flush all sending data */
 					perror("other error");
-					free_fd_state_send(fds);
+					free_fd_state(fds);
 					return;
 				}				
 		}
@@ -385,7 +382,15 @@ stage1:
 	};
 
 stage2:
-	dbg("state15\n");
+	fds->send_state = 2;
+	dbg("state2\n");
+	fds->send_frame = msg_pop_frame(fds->send_msg);
+	if(fds->send_frame == NULL){
+		/* msg contains 0 frames */
+		msg_free(fds->send_msg);
+		fds->send_msg = NULL;
+		goto stage0;
+	}
 	fds->send_state = 3;
 	fds->send_content_byte = fds->send_frame->length + 4;
 	fds->send_frame->length = htonl(fds->send_frame->length);
@@ -393,7 +398,8 @@ stage2:
 	fds->send_ptr = (char*)&(fds->send_frame->length);
 	dbg("frame content size : %d,%d\n",fds->send_content_byte,fds->send_frame->length);
 stage3:
-	dbg("state2\n");
+	dbg("state3\n");
+	fds->send_state = 3;
 	while(fds->send_byte < fds->send_content_byte){	
 		r = send(sock,fds->send_ptr+fds->send_byte,fds->send_content_byte - fds->send_byte,0);
 		if(r <= 0 ){
@@ -401,14 +407,13 @@ stage3:
 					if(errno == EPIPE){
 						/* the other end closes receiving
 						 * flush all sending data */
-						free_fd_state_send(fds);
+						free_fd_state(fds);
 						return;
 					}
 
 				}
 				if(errno == EINTR)continue;
 				else if(errno == EAGAIN || errno ==  EWOULDBLOCK){
-					fds->send_state = 3;
 					event_add(fds->write_event, NULL);
 					dbg("sending is blocked, add send event\n");
 					return;
@@ -417,21 +422,15 @@ stage3:
 					/* other error 
 					 * flush all sending data */
 					perror("other error");
-					free_fd_state_send(fds);
+					free_fd_state(fds);
 					dbg("other error\n");
 					return;
 				}				
 		}
 		fds->send_byte+=r;
 	}
-	fds->send_frame = msg_pop_frame(fds->send_msg);
-	if(fds->send_frame == NULL){	
-		fds->send_state = 0;
-		goto stage0;
-	}
-	else goto stage2;
-	
-	
+        frame_free(fds->send_frame);
+	goto stage2;	
 	return;
 	
 }
@@ -534,7 +533,7 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 							exit(0);
 						}
 						else{
-					/*		qdata = malloc( sizeof( server_thread_data_t));
+							qdata = malloc( sizeof( server_thread_data_t));
 							if(!qdata){
 								dbg("fail to alloc\n");			
 							}
@@ -546,9 +545,7 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 								qdata->server = server;
 								thread_pool_schedule_task(server->thp,msg_server_thread_task_wrapper,(void*)qdata);
 							}
-						*/}
-						msg_free(fds->recv_msg);
-						fds->recv_msg = NULL;
+						}
 					}
 					else{
 						/* sending is closed */
@@ -643,11 +640,36 @@ do_read(evutil_socket_t fd, short events, void *arg)
  */
 static void free_fd_state(fd_state_t *state)
 {
-    dbg("\n");
     state->refcnt--;
+    msg_t* m;
+
     if(state->refcnt == 0){
-    	event_free(state->read_event);
-    	event_free(state->write_event);
+    dbg("\n");
+
+    	if(state->read_event){
+		event_free(state->read_event);
+		state->read_event = NULL;
+	}
+
+        if(state->write_event){
+		event_free(state->write_event);
+		state->write_event = NULL;
+        }
+
+	state->send_state = state->recv_state = -1;
+
+	if(state->send_msg){
+                msg_free(state->send_msg);
+                state->send_msg = NULL;
+        }
+	if(state->send_frame){
+		frame_free(state->send_frame);
+		state->send_frame = NULL;
+	}
+        while(  m = queue_pop(state->send_q) ){
+                msg_free(m);
+        }
+
     	close(state->sock);
     	ringbuffer_destroy(state->rb_recv);
     	ringbuffer_destroy(state->rb_send);
@@ -656,20 +678,6 @@ static void free_fd_state(fd_state_t *state)
     }
 }
 
-static void free_fd_state_send(fd_state_t * fds)
-{
-	msg_t* m;
-	fds->send_state = -1;
-	if(fds->send_msg){
-		msg_free(fds->send_msg);
-		fds->send_msg = NULL;
-	}
-	while(  m = queue_pop(fds->send_q) ){
-		msg_free(m);	
-	}
-	shutdown(fds->sock,SHUT_WR);
-
-}
 static fd_state_t * alloc_fd_state(msg_server_t* server, evutil_socket_t fd)
 {
     struct event_base* base = server->base;
@@ -759,29 +767,20 @@ static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short ev
                perror("read");
 		return;
         }
-        printf("task:%d\n",u);
+        printf("task:%d, queue: %d\n",u,m->thp->q->number);
         for(i = 0;  i< u ; i++){
 		pthread_spin_lock(&m->thp->qlock);
                 	qdata = (server_thread_data_t*) queue_pop(m->thp->q);
              	pthread_spin_unlock(&m->thp->qlock);
 		fds = qdata->fds;
 		if(fds->send_state != -1){
+			dbg("message to send\n");
 			msg_print(qdata->msg);
                 	queue_push(fds->send_q,qdata->msg);
-			fprintf(stderr,"before adding event\n");
-			if(fds->write_event == NULL){
-				fprintf(stderr,"null event\n");
-			}
-			else
                		event_add(fds->write_event, NULL);
-			fprintf(stderr,"after adding event\n");
         	}
-		else{
-			msg_free(qdata->msg);
-		}
-		free(qdata);
 		free_fd_state(fds);
-		
+		free(qdata);
         }	
 }
 static void* msg_server_thread_task_wrapper(void* arg)
