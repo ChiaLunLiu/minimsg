@@ -44,6 +44,7 @@ typedef struct _server_thread_data{
 
 static fd_state_t * alloc_fd_state(msg_server_t* server, evutil_socket_t fd);
 static void free_fd_state(fd_state_t *state);
+static void free_network_rw_event(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
 static void* msg_server_thread_task_wrapper(void* arg);
@@ -359,6 +360,7 @@ stage1:
 					if(errno == EPIPE){
 						/* the other end closes receiving
 						 * flush all sending data */
+						free_network_rw_event(fds);
 						free_fd_state(fds);
 						return;
 					}
@@ -374,6 +376,7 @@ stage1:
 					/* other error 
 					 * flush all sending data */
 					perror("other error");
+					free_network_rw_event(fds);
 					free_fd_state(fds);
 					return;
 				}				
@@ -407,6 +410,7 @@ stage3:
 					if(errno == EPIPE){
 						/* the other end closes receiving
 						 * flush all sending data */
+						free_network_rw_event(fds);
 						free_fd_state(fds);
 						return;
 					}
@@ -422,6 +426,7 @@ stage3:
 					/* other error 
 					 * flush all sending data */
 					perror("other error");
+					free_network_rw_event(fds);
 					free_fd_state(fds);
 					dbg("other error\n");
 					return;
@@ -524,34 +529,26 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 				if(fds->recv_number_of_frame == 0){
 					/* a complete message is received */
 					fds->recv_state = MINIMSG_STATE_RECV_NUMBER_OF_FRAME;
-					if(fds->send_state != -1){
-						/* send it to thread pool */
-						/* if server does not have thread pool , handle the msg itself */
-						if(!server->thp){
-							//TODO
-							dbg("not implemented yet\n");
-							exit(0);
-						}
-						else{
-							qdata = malloc( sizeof( server_thread_data_t));
-							if(!qdata){
-								dbg("fail to alloc\n");			
-							}
-							else{
-								qdata->msg = fds->recv_msg;
-								fds->recv_msg = NULL;
-								fds->refcnt++;
-								qdata->fds = fds;
-								qdata->server = server;
-								thread_pool_schedule_task(server->thp,msg_server_thread_task_wrapper,(void*)qdata);
-							}
-						}
+					/* send it to thread pool */
+					/* if server does not have thread pool , handle the msg itself */
+					if(!server->thp){
+						//TODO
+						dbg("not implemented yet\n");
+						exit(0);
 					}
 					else{
-						/* sending is closed */
-						dbg("send is closed\n");
-						msg_free(fds->recv_msg);
-						fds->recv_msg = NULL;
+						qdata = malloc( sizeof( server_thread_data_t));
+						if(!qdata){
+							dbg("fail to alloc\n");			
+						}
+						else{
+							qdata->msg = fds->recv_msg;
+							fds->recv_msg = NULL;
+							fds->refcnt++;
+							qdata->fds = fds;
+							qdata->server = server;
+							thread_pool_schedule_task(server->thp,msg_server_thread_task_wrapper,(void*)qdata);
+						}
 					}
 				}
 				else
@@ -573,6 +570,12 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 	if (result <= 0) {  /* disconnect */
 		if(result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
     		if(result == 0)dbg("disconnect\n");
+		if(fds->recv_msg){
+			msg_free(fds->recv_msg);
+			fds->recv_msg = NULL;
+		}
+		free_network_rw_event(fds);
+
 	    	free_fd_state(fds);
     	}
 	return;	
@@ -582,6 +585,7 @@ fail:
 		msg_free(fds->recv_msg);
 		fds->recv_msg = NULL;
 	}
+	free_network_rw_event(fds);
 	free_fd_state(fds);
 	//TODO
 }
@@ -632,6 +636,21 @@ do_read(evutil_socket_t fd, short events, void *arg)
     }
 }
 */
+static void free_network_rw_event(fd_state_t *state)
+{
+	
+    	if(state->read_event){
+		event_free(state->read_event);
+		state->read_event = NULL;
+	}
+
+        if(state->write_event){
+		event_free(state->write_event);
+		state->write_event = NULL;
+        }
+	state->send_state = state->recv_state = -1;
+}
+
 /* fd_state_t may be passed to other threads and passed back
  * but, when the connection is closed, the thread in charge of network I/O would
  * free it, but it should only free it when fd_state_t is not referenced by threads
@@ -645,18 +664,8 @@ static void free_fd_state(fd_state_t *state)
 
     if(state->refcnt == 0){
     dbg("\n");
+	free_network_rw_event(state);
 
-    	if(state->read_event){
-		event_free(state->read_event);
-		state->read_event = NULL;
-	}
-
-        if(state->write_event){
-		event_free(state->write_event);
-		state->write_event = NULL;
-        }
-
-	state->send_state = state->recv_state = -1;
 
 	if(state->send_msg){
                 msg_free(state->send_msg);
@@ -773,13 +782,17 @@ static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short ev
                 	qdata = (server_thread_data_t*) queue_pop(m->thp->q);
              	pthread_spin_unlock(&m->thp->qlock);
 		fds = qdata->fds;
+		free_fd_state(fds);
 		if(fds->send_state != -1){
 			dbg("message to send\n");
 			msg_print(qdata->msg);
                 	queue_push(fds->send_q,qdata->msg);
                		event_add(fds->write_event, NULL);
         	}
-		free_fd_state(fds);
+		else{
+			dbg("%s: send is closed\n",__func__);
+			msg_free(qdata->msg);
+		}
 		free(qdata);
         }	
 }
