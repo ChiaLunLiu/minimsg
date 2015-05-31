@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <errno.h>
+#include "util.h"
 /* For sockaddr_in */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -24,14 +25,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-//#define DEBUG 1
-
-#if defined(DEBUG)
- #define dbg(fmt, args...) do{ fprintf(stderr, "%s(%d)/%s: " fmt, \
-    __FILE__, __LINE__, __func__, ##args); }while(0)
-#else
- #define dbg(fmt, args...) do{}while(0)/* Don't do anything in release builds */
-#endif
 
 typedef struct _server_thread_data{
 	void* msg;
@@ -178,6 +171,18 @@ int msg_append_string(msg_t* m,const char* str)
 	if(!f)return MINIMSG_FAIL;
 	msg_append_frame(m,f);
 	return MINIMSG_OK;
+}
+void msg_append_string_f(msg_t* m,const char *format, ...)
+{
+    va_list argptr;
+    va_start (argptr, format);
+    char *string = zsys_vprintf (format, argptr);
+    va_end (argptr);
+
+    if(!string) handle_error("msg_apend_string_f\n");
+
+    msg_append_string(m,string); 
+    free(string);
 }
 void msg_append_frame(msg_t* m,frame_t* f)
 {

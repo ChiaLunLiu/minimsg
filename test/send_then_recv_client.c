@@ -34,7 +34,7 @@ int main(int argc,char** argv)
 	}
 	puts("Connected");
 		/* message testing */
-		for(i = 0 ;i < 1000; i++){
+		for(i = 0 ;i < 10000; i++){
 	//		printf("frame %d\n",i);
 			m = msg_alloc();
 			msg_append_string(m,"frame 1");

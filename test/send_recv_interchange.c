@@ -37,7 +37,7 @@ int main(int argc,char** argv)
 		for(i = 0 ;i < 1000; i++){
 	//		printf("frame %d\n",i);
 			m = msg_alloc();
-			msg_append_string(m,"frame 1");
+			msg_append_string_f(m,"%s","frame 1");
 			msg_append_string(m,"frame 2");
 			msg_append_string(m,"frame 3");
 			msg_print(m);
