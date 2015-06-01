@@ -3,6 +3,7 @@
 #include "ringbuffer.h"
 #include "thread_pool.h"
 #include "queue.h"
+#include "util.h"
 #include <event2/event.h>
 #define MINIMSG_OK 2
 #define MINIMSG_FAIL 3
@@ -102,7 +103,7 @@ struct _msg_server{
  */
  int frame_truesize(const frame_t* f);
 int frame_transfer_byte(const frame_t* f);
-const char* frame_content(const frame_t* f);
+char* frame_content(const frame_t* f);
 int frame_send(int sock,frame_t* f);
 /* 
  * frame_recv would allocate memory for frame 

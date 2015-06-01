@@ -10,7 +10,6 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <errno.h>
-#include "util.h"
 /* For sockaddr_in */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -83,9 +82,15 @@ void frame_free(frame_t* f)
 {
 	free(f);
 }
-inline const char*  frame_content(const frame_t* f)
+char*  frame_content(const frame_t* f)
 {
-	return f->content;
+	char* s;
+	s = malloc( f->length+1);
+	if(!s) handle_error("malloc failed\n");
+	
+	memcpy(s,f->content,f->length);
+	s[f->length]='\0';
+	return s;
 }
 int frame_truesize(const frame_t* f)
 {
@@ -175,8 +180,9 @@ int msg_append_string(msg_t* m,const char* str)
 void msg_append_string_f(msg_t* m,const char *format, ...)
 {
     va_list argptr;
+    char* string;
     va_start (argptr, format);
-    char *string = zsys_vprintf (format, argptr);
+      string = zsys_vprintf (format, argptr);
     va_end (argptr);
 
     if(!string) handle_error("msg_apend_string_f\n");
@@ -307,7 +313,7 @@ void msg_print(const msg_t * m)
 	dbg("%s\n",__func__);
 	for(tmp = m->front ; tmp ; tmp = tmp->next , cnt++){
 		printf("[frame %d]\n",cnt);
-		reply = frame_content(tmp);
+		reply = tmp->content;
 		printf("(%d):", tmp->length);
 		for(i=0;i<tmp->length;i++){
 			printf("%c",reply[i]);

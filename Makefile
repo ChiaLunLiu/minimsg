@@ -1,18 +1,31 @@
 
+MINIMSG_INCLUDE_DIR=/usr/include/minimsg
 
-
-all:
-	gcc test_client.c minimsg.c queue.c ringbuffer.c thread_pool.c util.c -o client -O2 -levent -lrt -DDEBUG -pg
-	gcc test_server.c minimsg.c queue.c ringbuffer.c thread_pool.c util.c -o server -O2 -levent -lpthread
-	gcc test_blocking_server.c minimsg.c queue.c ringbuffer.c thread_pool.c util.c -o blocking_server -O2 -levent -lrt
-ringbuf:
-	gcc ringbuffer_test.c ringbuffer.c -g
-debug:
-	gcc test_client.c minimsg.c -o client -O2 -pg
-	gcc test_server.c minimsg.c -o server -O2
-test:
-	gcc nonblocking-server.c -o server -O2 ${DEBUG} -levent
-test_server:
-	gcc test_server.c minimsg.c -o server -O2 ${DEBUG} -levent
+all: library
+library:
+	gcc -fPIC minimsg.c queue.c ringbuffer.c thread_pool.c util.c -shared -O2 -o libminimsg.so -lpthread -levent
+install:
+	install libminimsg.so /usr/lib
+	mkdir -p ${MINIMSG_INCLUDE_DIR}
+	install  minimsg.h ${MINIMSG_INCLUDE_DIR}
+	install  queue.h ${MINIMSG_INCLUDE_DIR}
+	install  ringbuffer.h ${MINIMSG_INCLUDE_DIR}
+	install  thread_pool.h ${MINIMSG_INCLUDE_DIR}
+	install  util.h ${MINIMSG_INCLUDE_DIR}
+uninstall:
+	rm /usr/lib/libminimsg.so
+	rm ${MINIMSG_INCLUDE_DIR}/minimsg.h
+	rm ${MINIMSG_INCLUDE_DIR}/queue.h
+	rm ${MINIMSG_INCLUDE_DIR}/ringbuffer.h
+	rm ${MINIMSG_INCLUDE_DIR}/thread_pool.h
+	rm ${MINIMSG_INCLUDE_DIR}/util.h
+	rmdir ${MINIMSG_INCLUDE_DIR}
+	
+template:
+	make -C template
 clean:
-	rm -f client server
+	rm libminimsg.so
+	make -C template clean
+distclean: uninstall clean
+	
+	
