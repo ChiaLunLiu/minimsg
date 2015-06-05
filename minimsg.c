@@ -347,6 +347,10 @@ const char* msg_content_at_frame(const msg_t* m,int idx)
 	return NULL;
 }
 
+inline int msg_number_of_frame(const msg_t* m)
+{
+	return m->frames;
+}
 void msg_print(const msg_t * m)
 {
 	int cnt = 0;
@@ -354,6 +358,7 @@ void msg_print(const msg_t * m)
 	const char* reply;
 	frame_t * tmp;
 	dbg("%s\n",__func__);
+	printf("total frames: %d\n",msg_number_of_frame(m));
 	for(tmp = m->front ; tmp ; tmp = tmp->next , cnt++){
 		printf("[frame %d]\n",cnt);
 		printf("(%d):%s\n",tmp->length,frame_content(tmp));
