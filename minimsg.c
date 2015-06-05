@@ -85,6 +85,7 @@ void frame_free(frame_t* f)
 char*  frame_content(const frame_t* f)
 {
 	char* s;
+	if(!f) return NULL;
 	s = malloc( f->length+1);
 	if(!s) handle_error("malloc failed\n");
 	
@@ -169,6 +170,30 @@ int frame_recv(int sock,frame_t** f)
 //	(*f)->content[length ] ='\0';
 	return MINIMSG_OK;
 }
+int msg_prepend_string(msg_t* m,const char* str)
+{
+	frame_t * f;
+	f = frame_string(str);
+	if(!f)return MINIMSG_FAIL;
+	msg_prepend_frame(m,f);
+	return MINIMSG_OK;
+	
+}
+void msg_prepend_string_f(msg_t* m,const char *format, ...)
+{
+	
+    va_list argptr;
+    char* string;
+    va_start (argptr, format);
+      string = zsys_vprintf (format, argptr);
+    va_end (argptr);
+
+    if(!string) handle_error("msg_apend_string_f\n");
+
+    msg_prepend_string(m,string); 
+    free(string);
+}
+
 int msg_append_string(msg_t* m,const char* str)
 {
 	frame_t * f;
@@ -189,6 +214,14 @@ void msg_append_string_f(msg_t* m,const char *format, ...)
 
     msg_append_string(m,string); 
     free(string);
+}
+void msg_prepend_frame(msg_t* m,frame_t* f)
+{
+	f->next = m->front;
+	m->front = f;
+	if(m->end == NULL) m->end = f;
+	m->frames++;
+	m->length+=frame_truesize(f);
 }
 void msg_append_frame(msg_t* m,frame_t* f)
 {
@@ -254,6 +287,7 @@ fail:
 frame_t* msg_pop_frame(msg_t* m)
 {
 	frame_t* f;
+	if(!m) return NULL;
 	if(m->front){
 		if(m->front == m->end ) m->end = NULL;
 		f = m->front;
@@ -526,10 +560,13 @@ static void msg_recv_nb(evutil_socket_t fd, short events, void *arg)
 				if(!fds->recv_frame) goto fail;
 				fds->recv_current_frame_byte = 0;
 				fds->recv_state = MINIMSG_STATE_RECV_FRAME_CONTENT;
+				/* special handling for length = 0 */
+				if(length == 0) goto recv_frame_content;
 			}
 			else leave=1;
 		break;
 		case MINIMSG_STATE_RECV_FRAME_CONTENT:
+recv_frame_content:
 			dbg("state => MINIMSG_STATE_RECV_FRAME_CONTENT\n");
 			dbg("(%d + %d ), %d\n",r,fds->recv_current_frame_byte,fds->recv_frame->length);
 			if(r  >= fds->recv_frame->length - fds->recv_current_frame_byte ){

@@ -32,8 +32,8 @@ int main(int argc,char** argv)
 	/* create message and send message */
 	m = msg_alloc();
 	msg_append_string_f(m,"%s %d","frame",1);
-	msg_append_string(m,"frame 2");
-	msg_append_string(m,"frame 3");
+	msg_append_string(m,"");
+//	msg_append_string(m,"frame 3");
 
 
 	/* msg_send/msg_recv returns MINIMSG_OK of successful transmission;

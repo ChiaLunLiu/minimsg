@@ -126,6 +126,10 @@ frame_t* msg_pop_frame(msg_t* m);
 msg_t* msg_alloc();
 void msg_free(msg_t* m);
 void msg_print(const msg_t * m);
+
+void msg_prepend_frame(msg_t* m,frame_t* f);
+int msg_prepend_string(msg_t* m,const char* str);
+void msg_prepend_string_f(msg_t* m,const char *format, ...);
 int msg_append_string(msg_t* m,const char* str);
 void msg_append_string_f(msg_t* m,const char *format, ...);
 void msg_append_frame(msg_t* m,frame_t* f);
