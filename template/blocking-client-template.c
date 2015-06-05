@@ -12,6 +12,7 @@ int main(int argc,char** argv)
 	struct sockaddr_in server;
 	frame_t * f;
 	msg_t * m;
+	const char* str;
 	sock = socket(AF_INET,SOCK_STREAM,0);
 	if(sock == -1)
 	{
@@ -47,6 +48,10 @@ int main(int argc,char** argv)
 	printf("start receiving ...\n");
 	if(msg_recv(sock,&m) == MINIMSG_OK){
 		msg_print(m);
+		printf("%s\n",msg_content_at_frame(m,0) );
+		str = msg_content_at_frame(m,1);
+		if(str) printf("%s\n",str);
+		else printf("str = null\n");
 		msg_free(m);
 	}
 	else printf("recv FAIL\n");

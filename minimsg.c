@@ -332,6 +332,21 @@ fail:
 	msg_free(tmp);
 	return MINIMSG_FAIL;
 }
+const char* msg_content_at_frame(const msg_t* m,int idx)
+{
+	int cnt = 0;
+	frame_t* tmp;
+	if(idx < m->frames){
+		for(tmp = m->front ; tmp ; tmp = tmp->next , cnt++){
+			if( idx == cnt ){
+				return frame_content(tmp);
+			}
+		}
+		dbg("[debug]: unexpected case \n");	
+	}
+	return NULL;
+}
+
 void msg_print(const msg_t * m)
 {
 	int cnt = 0;

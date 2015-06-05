@@ -122,6 +122,7 @@ void	 frame_free(frame_t* f);
  * ---------------------- 
  */
 /* get the current first frame */
+const char* msg_content_at_frame(const msg_t* m,int idx);
 frame_t* msg_pop_frame(msg_t* m);
 msg_t* msg_alloc();
 void msg_free(msg_t* m);
