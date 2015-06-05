@@ -65,9 +65,10 @@ frame_t* frame_string(const char* str)
 {
 	frame_t * f;
 	int len = strlen(str);
-	f = frame_alloc( len );
+	f = frame_alloc( len +1);
 	if(!f) return NULL;
 	memcpy(f->content,str,len);
+	f->content[len] = '\0';
 	return f;
 }
 frame_t* frame_alloc(int sz)
@@ -82,16 +83,9 @@ void frame_free(frame_t* f)
 {
 	free(f);
 }
-char*  frame_content(const frame_t* f)
+const char* frame_content(const frame_t* f)
 {
-	char* s;
-	if(!f) return NULL;
-	s = malloc( f->length+1);
-	if(!s) handle_error("malloc failed\n");
-	
-	memcpy(s,f->content,f->length);
-	s[f->length]='\0';
-	return s;
+	return f->content;
 }
 int frame_truesize(const frame_t* f)
 {
@@ -347,13 +341,7 @@ void msg_print(const msg_t * m)
 	dbg("%s\n",__func__);
 	for(tmp = m->front ; tmp ; tmp = tmp->next , cnt++){
 		printf("[frame %d]\n",cnt);
-		reply = tmp->content;
-		printf("(%d):", tmp->length);
-		for(i=0;i<tmp->length;i++){
-			printf("%c",reply[i]);
-		}
-		printf("\n");
-//		printf("%s\n",reply);
+		printf("(%d):%s\n",tmp->length,frame_content(tmp));
 	}	
 }
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg)

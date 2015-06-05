@@ -103,7 +103,7 @@ struct _msg_server{
  */
  int frame_truesize(const frame_t* f);
 int frame_transfer_byte(const frame_t* f);
-char* frame_content(const frame_t* f);
+const char* frame_content(const frame_t* f);
 int frame_send(int sock,frame_t* f);
 /* 
  * frame_recv would allocate memory for frame 
