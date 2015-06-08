@@ -33,8 +33,8 @@ int main(int argc,char** argv)
 	/* create message and send message */
 	m = msg_alloc();
 	msg_append_string_f(m,"%s %d","frame",1);
-	msg_append_string(m,"");
-//	msg_append_string(m,"frame 3");
+	msg_append_string(m,""); 
+	msg_append_string(m,"frame 2");
 
 
 	/* msg_send/msg_recv returns MINIMSG_OK of successful transmission;
@@ -47,11 +47,14 @@ int main(int argc,char** argv)
 		
 	printf("start receiving ...\n");
 	if(msg_recv(sock,&m) == MINIMSG_OK){
+		r = msg_number_of_frame(m);
+		printf("This message has %d frames\n",r);
 		msg_print(m);
-		printf("%s\n",msg_content_at_frame(m,0) );
-		str = msg_content_at_frame(m,1);
-		if(str) printf("%s\n",str);
-		else printf("str = null\n");
+		for(i=0;i<r ;i++){
+			/* str holds reference to msg cotent */
+			str =msg_content_at_frame(m,i);
+			printf("[frame %d]: %s\n",i,str);
+		}
 		msg_free(m);
 	}
 	else printf("recv FAIL\n");

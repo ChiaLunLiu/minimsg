@@ -11,7 +11,7 @@
  *    1.  NULL  ( the user has nothing to send it back
  *    2.  msg_t* if the user wants to send message back
  * 
- * user has to free input argument.
+ * user has to free input argument and alloc memory for return message.
  */ 
 void* cb(void* arg)
 {
@@ -22,7 +22,7 @@ void* cb(void* arg)
 	printf("send\n");
 	m = msg_alloc();
 	msg_append_string(m,"hi from server");
-	
+	msg_append_string(m,"");	
 	return m;
 }
 int main()
