@@ -1,12 +1,11 @@
 #include "thread_pool.h"
+#include "util.h"
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <pthread.h>
-#define handle_error(msg) \
-           do { perror(msg); exit(EXIT_FAILURE); } while (0)
 
 typedef struct _qelement_t
 {
@@ -157,6 +156,7 @@ void thread_pool_assign_task(thpool_t* thp, void*(*task)(void*), void* arg,int n
 	thnode_t* th = (thnode_t*)thp->threads[no];
 	uint64_t u;
     ssize_t s;
+	dbg("assign task to %d\n",no);
 	qelement_t* qe = malloc( sizeof(qelement_t));
 	
 	if(!qe)	handle_error("malloc qelement_t");

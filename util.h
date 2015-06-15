@@ -3,7 +3,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
-#if defined(DEBUG)
+#ifdef DEBUG
  #define dbg(fmt, args...) do{ fprintf(stderr, "%s(%d)/%s: " fmt, \
     __FILE__, __LINE__, __func__, ##args); }while(0)
 #else
