@@ -1,3 +1,21 @@
+/*
+ * 
+ * 
+ *  when to free fd_state_t is timing issue, 
+ *  when the socket works as server,
+ *  do_accept : +1
+ *  push to ctx_recv_q : +1
+ *  assign socket->current: +1
+ *  drop socket->current: -1
+ *  pop from ctx_recv_q : -1
+ *  network disconnect : -1
+ * 
+ *  When the socket works as client,
+ *  socket create : +1
+ *  network connect : +1
+ *  network disconnect : -1  
+ *  socket destroy : -1
+ */
 #ifndef __MINIMSG_H__
 #define __MINIMSG_H__
 #include "ringbuffer.h"
@@ -107,7 +125,7 @@ typedef struct _msg_state{
 									   *  number of connection
 									   */
 	list_node_t* list_node;           /* linked in minimsg_context_t connected list */
-	int refcnt;						  /* reference counter, when it reaches 0, the memory should free */
+	int refcnt;
 	pthread_spinlock_t lock;          /* lock for reference counter */	
 }fd_state_t;
 
@@ -143,15 +161,16 @@ struct _minimsg_socket{
 	struct _minimsg_context* ctx;
 	struct _minimsg_socket * next; /* for linked list */
 	fd_state_t* current; /* currently processing session
-						  * when isClient = 1, it is always a fixed value
+						  * when isClient = 1, it is always the same session
 						  * 	 isClient = 0, it is the currently processing session
 						  */
-	list_node_t*  list_node; /* for auto reconnect */
+	list_node_t*  list_node; /* for auto reconnect for minimsg_context */
 	/* client */
+	int is_connecting;         /* 0: never connect, 1: connecting ; 2 : connected */
 	struct sockaddr_in server; /* server address */
 	/* server */
 	struct event* listener_event;
-	fd_state_t * connected_list;
+	list_t* connected_list; /* a list of connected session of type fd_state_t */
 	evutil_socket_t listener; /* server_sock */ 
 	
 };

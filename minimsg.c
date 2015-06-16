@@ -39,8 +39,8 @@ typedef struct _queue_data{
 
 static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short events, void *arg);
 static fd_state_t * alloc_fd_state(minimsg_socket_t* server, evutil_socket_t fd);
-static void free_fd_state(fd_state_t *state);
-static void fd_state_add_reference(fd_state_t* state);
+static int free_fd_state(fd_state_t *state);
+
 static void free_network_rw_event(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
@@ -619,10 +619,7 @@ recv_frame_content:
 					else{
 						qdata->msg = fds->recv_msg;
 						fds->recv_msg = NULL;
-						/* add because fd_state is put in queue */
-						fd_state_add_reference(fds);
 						qdata->fds = fds;
-						
 						pthread_spin_lock(&server->lock);
 						queue_push( server->recv_q,(void*)qdata); 
 						pthread_spin_unlock(&server->lock);
@@ -735,16 +732,23 @@ static void free_network_rw_event(fd_state_t *state)
  * free it, but it should only free it when fd_state_t is not referenced by other threads
  * no lock is needed here because only one thread deals with its memory.
  */
-static void free_fd_state(fd_state_t *state)
+static int free_fd_state(fd_state_t *state)
 {
-    state->refcnt--;
+   
     msg_t* m;
-	
-    if(state->refcnt == 0){
+    queue_data_t* qd;
+    int refcnt;
+    queue_t* q;
+    queue_t* tmp;
     dbg("\n");
+    pthread_spin_lock(&state->lock);
+		state->refcnt--;
+		refcnt = state->refcnt;
+    pthread_spin_unlock(&state->lock);
+    
+    if(refcnt == 0){
 	free_network_rw_event(state);
-
-
+	
 	if(state->send_msg){
                 msg_free(state->send_msg);
                 state->send_msg = NULL;
@@ -756,15 +760,15 @@ static void free_fd_state(fd_state_t *state)
     while(  m = queue_pop(state->send_q) ){
         msg_free(m);
     }
-
+   
 	close(state->sock);
     ringbuffer_destroy(state->rb_recv);
     ringbuffer_destroy(state->rb_send);
     queue_free(state->send_q);
     pthread_spin_destroy(&state->lock);
     free(state);
-    
-    }
+	}
+    return refcnt;
 }
 
 static fd_state_t * alloc_fd_state(minimsg_socket_t* ss, evutil_socket_t fd)
@@ -795,9 +799,8 @@ static fd_state_t * alloc_fd_state(minimsg_socket_t* ss, evutil_socket_t fd)
     }
 
     state->sock = fd;
-    state->refcnt = 1;
     state->minimsg_socket = ss;
-    
+    state->refcnt = 1; 
 	state->rb_recv = ringbuffer_alloc(MINIMSG_MSGSERVER_BUFFER_SIZE);
 	state->rb_send = ringbuffer_alloc(MINIMSG_MSGSERVER_BUFFER_SIZE);
 	
@@ -829,6 +832,7 @@ static fd_state_t * alloc_fd_state(minimsg_socket_t* ss, evutil_socket_t fd)
 	}
 	state->list_node = list_node;
 	
+	list_rpush(ss->connected_list,state->list_node);
 
 	
     return state;
@@ -1162,14 +1166,14 @@ error:
 minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 {
 	minimsg_socket_t* s;
-
+	list_t* l;
 	s = (minimsg_socket_t*) malloc( sizeof( minimsg_socket_t));
 	if(!s) return NULL;
 
 	s->pending_send_q = queue_alloc();
 	s->recv_q = queue_alloc();
 	s->recv_efd = eventfd(0,0);
-	
+	s->is_connecting = 0;
 	s->listener = -1;
 	s->type = type;
 	s->next = NULL;
@@ -1186,11 +1190,14 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 		//TODO
 		handle_error("not implemented\n");
 	}
+	s->connected_list = list_new();
+	
 	if(pthread_spin_init(&s->lock,0)!=0) handle_error("pthread_spin_init");
-	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL){
+	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL || s->connected_list == NULL ){
 		if(s->recv_q) queue_free(s->recv_q);
 		if(s->recv_efd !=-1) close(s->recv_efd);
 		if(s->pending_send_q) queue_free(s->pending_send_q);
+		if(s->connected_list) list_free(s->connected_list);
 		return NULL;
 	}	
 	return s;
@@ -1205,6 +1212,7 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
 	int one=1;
 	
 	s->isClient = 1;
+	s->is_connecting = 0;
 	if(server.sin_family == AF_INET){
 			sock = socket(AF_INET,SOCK_STREAM,0);
         	if(sock == -1)
@@ -1219,6 +1227,7 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
         	if (connect(sock,(struct sockaddr*)&s->server,sizeof(s->server))<0){
 				/* add it to connecting pool */
 					close(sock);
+					s->is_connecting = 1;
 					add_to_connecting_list(s->ctx,s);
         	        perror("connect failed.");
         	        return MINIMSG_FAIL;
@@ -1277,40 +1286,50 @@ int minimsg_send(minimsg_socket_t* ss, msg_t* m)
 	uint64_t uw;
 	ssize_t s;
 	minimsg_context_t* ctx;
-	queue_data_t* q;
-	
+	queue_data_t* qd;
+	int fail = 0;
 	ctx = ss->ctx;
 	printf("state : %d\n",ss->state);
 	if(check_send_state(ss) == MINIMSG_FAIL){
 		handle_error("fail to pass check_send_state\n");
 	}
-	
-	q = (queue_data_t*) malloc( sizeof( queue_data_t) );
-	if(!q) return MINIMSG_FAIL;
-	
-	fd_state_add_reference(ss->current);
-	if(ss->isClient){
-		q->fds = ss->current;
+	if( ss->is_connecting == 1){
+		queue_push(ss->pending_send_q,m);
+		goto end;
 	}
-	else{
-		/* TODO, further improvement is needed when server
-		 * wants to start sending data first 
-		 */
-		q->fds = ss->current;
-	}
+	/* network is disconnected */
+	if(ss->current->send_state == -1){
+		if(ss->isClient == 0) free_fd_state(ss->current);
+		fail = 1;
+		goto end;
+	} 
+	/* for server 
+	 * drop reference due to ss->current and add reference due to add into queue
+	 *  both offsets, so do nothing
+	 */ 
 	
-	q->msg = m;
-	pthread_spin_lock(&ctx->lock);
-		queue_push( ctx->send_q,q); 
-	pthread_spin_unlock(&ctx->lock);
-
-	uw = 1;
-	/* write is thread safe */
-    s = write(ctx->send_efd, &uw, sizeof(uint64_t));
-    if (s != sizeof(uint64_t)) handle_error("write");
+		qd = (queue_data_t*) malloc( sizeof( queue_data_t) );
+		if(!qd) return MINIMSG_FAIL;
+		
+		if(ss->isClient){
+			qd->fds = ss->current;
+		}
+		else{
+			/* TODO, further improvement is needed when server
+			* wants to start sending data first 
+			*/
+			qd->fds = ss->current;
+		}
+		qd->msg = m;
+		queue_push( ctx->send_q,qd);
 	
+		uw = 1;
+		/* write is thread safe */
+		s = write(ctx->send_efd, &uw, sizeof(uint64_t));
+		if (s != sizeof(uint64_t)) handle_error("write");
+end:
 	update_socket_state(ss);
-	return MINIMSG_OK;
+	return  fail? MINIMSG_FAIL : MINIMSG_OK;
 }
 msg_t* minimsg_recv(minimsg_socket_t* ss)
 {
@@ -1325,18 +1344,27 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 	dbg("waiting for reading ... \n");
 	s = read(ss->recv_efd, &ur, sizeof(uint64_t));
     if (s != sizeof(uint64_t)){
-		handle_error("read error\n");
+		dbg("read error\n");
+		return NULL;
 	}
 	dbg("got %lu message\n",ur);
 	if(ur > 1){
 		ur--;
 		s = write(ss->recv_efd,&ur,sizeof(uint64_t));
-		if (s != sizeof(uint64_t)) handle_error("write error\n");
+		if (s != sizeof(uint64_t)){
+			dbg("write error\n");
+			return NULL;
+		}
 	}
 	pthread_spin_lock(&ss->lock);
-		qd = (queue_data_t*) queue_pop( ss->recv_q); 
+		qd = (queue_data_t*) queue_pop( ss->recv_q);
+		if(ss->isClient == 0){ 
+			ss->current = qd->fds;
+			ss->current->refcnt++;
+		}
 	pthread_spin_unlock(&ss->lock);
-	ss->current = qd->fds;
+	/* leave queue */
+	if(ss->isClient == 0) free_fd_state(ss->current); 
 	
 	update_socket_state(ss);
 	
@@ -1381,7 +1409,7 @@ static void sending_handler(evutil_socket_t fd, short events, void *arg)
 	fd_state_t* fds;
 	queue_data_t* qdata;
 	minimsg_context_t* ctx = (minimsg_context_t*) arg;
-	minimsg_socket_t* ms;
+	minimsg_socket_t* ss;
 	s = read(fd, &u, sizeof(uint64_t));
     if (s != sizeof(uint64_t)){
          perror("read");
@@ -1392,7 +1420,7 @@ static void sending_handler(evutil_socket_t fd, short events, void *arg)
 			qdata = (queue_data_t*) queue_pop(ctx->send_q);
         pthread_spin_unlock(&ctx->lock);
 		fds = qdata->fds;
-		free_fd_state(fds);
+		ss = fds->minimsg_socket;
 		if(fds->send_state != -1){
 			dbg("message to send\n");
 		//	msg_print(qdata->msg);
@@ -1400,6 +1428,7 @@ static void sending_handler(evutil_socket_t fd, short events, void *arg)
             event_add(fds->write_event, NULL);
         }
 		else{
+			if(ss->isClient == 0) free_fd_state(fds);
 			dbg("send is closed, free msg\n");
 			msg_free(qdata->msg);
 		}
@@ -1422,9 +1451,4 @@ int minimsg_free_socket(minimsg_socket_t* s)
 {
 	
 }
-static void fd_state_add_reference(fd_state_t* state)
-{
-	pthread_spin_lock(&state->lock);
-		state->refcnt++;
-	pthread_spin_unlock(&state->lock);
-}
+
