@@ -124,7 +124,6 @@ typedef struct _msg_state{
 									   *  For server minimsg_socket, its instances are based
 									   *  number of connection
 									   */
-	list_node_t* list_node;           /* linked in minimsg_context_t connected list */
 	int refcnt;
 	pthread_spinlock_t lock;          /* lock for reference counter */	
 }fd_state_t;
@@ -155,22 +154,23 @@ struct _minimsg_socket{
 	queue_t * recv_q;
 	int recv_efd;
 	int type; /* REQ, REP */
-	int state ; /* recv or send, or both */
+	int state ; /* recv or send  */
 	pthread_spinlock_t lock;
-	int isClient; /* 1: client ; 0: server */
+	int isClient;              /* 
+								* When the socket does minimsg_connect, it is client
+								* When it does minimsg_bind, it is server
+								* 1: client ; 0: server
+								*/
 	struct _minimsg_context* ctx;
-	struct _minimsg_socket * next; /* for linked list */
 	fd_state_t* current; /* currently processing session
 						  * when isClient = 1, it is always the same session
 						  * 	 isClient = 0, it is the currently processing session
+						  *  For client, when it is NULL, network is not established yet.
 						  */
-	list_node_t*  list_node; /* for auto reconnect for minimsg_context */
 	/* client */
-	int is_connecting;         /* 0: never connect, 1: connecting ; 2 : connected */
 	struct sockaddr_in server; /* server address */
 	/* server */
 	struct event* listener_event;
-	list_t* connected_list; /* a list of connected session of type fd_state_t */
 	evutil_socket_t listener; /* server_sock */ 
 	
 };
@@ -191,7 +191,8 @@ typedef struct _minimsg_context{
 	pthread_spinlock_t lock;
 	struct event* timeout_event;  /* for auto connect */
 	list_t* connecting_list;      /* a list of connecting socket for auto connect*/
-	list_t* connected_list;       /* a list of connected fd_state_t */
+	list_t* sk_list;              /* a list of created socket  */
+	list_t* fd_list;              /* a list of created fd_state_t* */
 }minimsg_context_t;
 
 /* ----------------------
@@ -249,7 +250,7 @@ int add_msg_clients(msg_client_t* c,int type,const char* location, int port,int 
 int connect_msg_clients(msg_client_t* c);
 void msg_client_send(msg_client_t* clients, const char* server_location,msg_t* m);
 
-minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int socket_type);
+
 int minimsg_connect(minimsg_socket_t* s,struct sockaddr_in server);
 msg_t* minimsg_recv(minimsg_socket_t* s);
 /*
@@ -262,6 +263,7 @@ int minimsg_free_context(minimsg_context_t* ctx);
 /*
  *  minimsg_free_socket
  */
+minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int minimsg_socket_type);
 int minimsg_free_socket(minimsg_socket_t* s);
  
 /*
