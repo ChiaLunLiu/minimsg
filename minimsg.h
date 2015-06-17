@@ -176,18 +176,22 @@ struct _minimsg_socket{
 };
 typedef struct _minimsg_context{
 	void * base;
-	pthread_t thread;
-	queue_t* send_q;
-	int send_efd;
-	struct event* sending_event; /*
-								  * This event is for thread in minimsg_context to know
-								  * when data is ready in send_q 
-								  */ 
-//	minimsg_socket_t* connecting_sockets; /* for auto reconnect */
+	pthread_t thread;            /* network I/O thread */
+	
+	/* the following 3 variables builds event that sends control message to network I/O thread */
+	queue_t* control_q;
+	int control_efd;  
+	struct event* control_event; 
+	
+	/* the following 3 variables builds event that sends data messages to network */
+	queue_t* data_q;
+	int data_efd;
+	struct event* data_event;   
+	
 	pthread_spinlock_t lock;
-	struct event* timeout_event; /* for auto reconnect */
-	list_t* connecting_list;  /* a list of connecting socket */
-	list_t* connected_list; /* a list of connected fd_state_t */
+	struct event* timeout_event;  /* for auto connect */
+	list_t* connecting_list;      /* a list of connecting socket for auto connect*/
+	list_t* connected_list;       /* a list of connected fd_state_t */
 }minimsg_context_t;
 
 /* ----------------------
@@ -254,10 +258,7 @@ msg_t* minimsg_recv(minimsg_socket_t* s);
  *  the message would be free if it is sent successfully
  */
 int minimsg_send(minimsg_socket_t* s, msg_t* m);
-/*
- *  minimsg_free_context
- *  free context memory and also minimsg sockets
- */
+
 int minimsg_free_context(minimsg_context_t* ctx);
 /*
  *  minimsg_free_socket

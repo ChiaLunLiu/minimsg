@@ -1466,9 +1466,13 @@ int minimsg_free_socket(minimsg_socket_t* s)
 	
 	pthread_spin_destroy(&s->lock);
 	
+	
 	int isClient; /* 1: client ; 0: server */
 	struct _minimsg_context* ctx;
 	if(s->current) free_fd_state(s->current);
+	
+	free(s->list_node);
+	if(s->listener_event) event_free(listener_event);
 	
 	list_node_t(
 	list_node_t*  list_node; /* for auto reconnect for minimsg_context */
@@ -1480,4 +1484,57 @@ int minimsg_free_socket(minimsg_socket_t* s)
 	list_t* connected_list; /* a list of connected session of type fd_state_t */
 	evutil_socket_t listener; /* server_sock */ 
 }
-
+/*
+ *  minimsg_free_context
+ *  send a kill message to network I/O thread to close all network connection 
+ *  and terminate itself.
+ *  pthread_join to wait for network I/O thread to complete the termination 
+ *  free context memory and also minimsg sockets
+ */
+int minimsg_free_context(minimsg_context_t* ctx)
+{
+	fd_state_t* state;
+	minimsg_socket_t* sk;
+	list_node_t* ln;
+	queue_data_t* qd;
+	msg_t* m;
+	pthread_join(ctx->thread,NULL);
+	
+	while( ln = lpop(ctx->connected_list)){
+		state = (fd_state_t*)ln->val;
+		free_fd_state(state);
+		free(ln);
+	}
+	free(ctx->connected_list);
+	
+	while( ln = lpop(ctx->connecting_list)){
+		sk = (minimsg_socket_t*)ln->val;
+		minimsg_free_socket(sk);
+		free(ln);
+	}
+	free(ctx->connecting_list);
+	
+	event_free(ctx->timeout_event);
+	
+	pthread_spin_destroy(&ctx->lock);
+	/* free data */
+	event_free(ctx->data_event);
+	close(ctx->data_efd);
+	while( qd = queue_pop(ctx->data_q)){
+		free_fd_state(qd->fds);
+		msg_free(qd->m);
+		free(qd);
+	}
+	queue_free(ctx->data_q);
+	
+	/* free control */
+	event_free(ctx->control_event);
+	close(ctx->control_efd);
+	while( m = queue_pop(ctx->control_q)){
+		msg_free(m);
+	}
+	queue_free(ctx->control_q);
+	
+	event_base_free(base);
+	free(ctx);
+}
