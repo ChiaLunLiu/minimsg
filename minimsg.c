@@ -1449,6 +1449,35 @@ static void add_to_connected_list(minimsg_context_t* ctx, fd_state_t* fds)
 }
 int minimsg_free_socket(minimsg_socket_t* s)
 {
+	msg_t* m;
+	queue_data_t* qd;
+	while( m = queue_pop(s->pending_send_q)){
+		msg_free(m);
+	}
+	queue_free(s->pending_send_q);
 	
+	while(qd = queue_pop(s->recv_q)){
+		msg_free(qd->m);
+		free_fd_state(qd->fds);
+		free(qd);
+	}
+	
+	close(recv_efd);
+	
+	pthread_spin_destroy(&s->lock);
+	
+	int isClient; /* 1: client ; 0: server */
+	struct _minimsg_context* ctx;
+	if(s->current) free_fd_state(s->current);
+	
+	list_node_t(
+	list_node_t*  list_node; /* for auto reconnect for minimsg_context */
+	/* client */
+	int is_connecting;         /* 0: never connect, 1: connecting ; 2 : connected */
+	struct sockaddr_in server; /* server address */
+	/* server */
+	struct event* listener_event;
+	list_t* connected_list; /* a list of connected session of type fd_state_t */
+	evutil_socket_t listener; /* server_sock */ 
 }
 
