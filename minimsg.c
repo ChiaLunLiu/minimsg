@@ -1102,64 +1102,75 @@ static void timeout_cb(int fd, short event, void *arg)
     printf("leave timeout\n");
         
 }
+/*
+ *  minimsg_create_context
+ *  create all the needed memory and a thread to handle network I/O
+ */
 minimsg_context_t* minimsg_create_context()
 {
 	int s;
 	minimsg_context_t * ctx = NULL;
 	struct event* timer_event = NULL;
-	struct event* sending_event= NULL;
+	struct event* data_event = NULL, *control_event = NULL;
 	void* base = NULL;
-	queue_t * send_q = NULL;
-	int send_efd = -1;
+	queue_t * data_q = NULL,* control_q = NULL;
+	int data_efd = -1, control_efd = -1;
 	struct timeval tv = {TIMEOUT_SECONDS,0};
 	list_t* connecting_list = NULL,*connected_list = NULL;
+
 	ctx = (minimsg_context_t*) malloc( sizeof( minimsg_context_t) );
 	
 	if(!ctx)goto error;
 	base = event_base_new();
 	if(!base) goto error;
-	send_efd = eventfd(0,0);
-	if(send_efd == -1)goto error;
-	sending_event=event_new(base, send_efd, EV_READ|EV_PERSIST, sending_handler, (void*)ctx );
-	if(!sending_event) goto error;
-	
-	timer_event = event_new(base,-1, EV_TIMEOUT |EV_PERSIST,timeout_cb,(void*)ctx);
-	if(!timer_event) goto error;
-   
-    send_q = queue_alloc();
-	if(!send_q) goto error;
-	
+	data_efd = eventfd(0,0);
+	control_efd = eventfd(0,0);
+	if(data_efd == -1 || control_efd == -1) goto error;
+	data_event=event_new(base, data_efd, EV_READ|EV_PERSIST, data_handler, (void*)ctx );
+	control_event=event_new(base, control_efd, EV_READ|EV_PERSIST, control_handler, (void*)ctx );
+	timer_event = event_new(base,-1, EV_TIMEOUT |EV_PERSIST,timeout_handler,(void*)ctx);
+	if(!data_event || !control_event || !timer_event) goto error;
+	   
+    data_q = queue_alloc();
+    control_q = queue_alloc();
+	if(!data_q || !control_q) goto error;
+
 	connecting_list = list_new();
-	if(!connecting_list) goto error;
 	connected_list = list_new();
-	if(!connected_list) goto error;
+	if(!connecting_list || !connected_list) goto error;
+	
+	if(event_add(timer_event,&tv)== -1 || event_add(data_event, NULL) == -1 || event_add(data_event, NULL) == -1)goto error;
 	
 	if(pthread_spin_init(&ctx->lock,0)!=0) goto error;
-	s = pthread_create(&ctx->thread,NULL,do_io_task,(void*)ctx);
+	s = pthread_create(&ctx->thread,NULL,thread_handler,(void*)ctx);
     if(s != 0){
 		pthread_spin_destroy(&ctx->lock);
 		goto error;
 	}
 	
-	
-	ctx->send_q = send_q;
-	ctx->send_efd = send_efd;
+	ctx->data_q = data_q;
+	ctx->data_efd = data_efd;
+	ctx->control_q = control_q;
+	ctx->control_efd = control_efd;
 	ctx->base = base;
 	ctx->connecting_list = connecting_list;
 	ctx->connected_list = connected_list;
 	ctx->timeout_event = timer_event;
-	ctx->sending_event = sending_event;
-	event_add(timer_event,&tv);
-	event_add(sending_event, NULL);
+	ctx->data_event = data_event;
+	ctx->control_event = control_event;
+	
 	return ctx;
 error:
 	if(ctx)free(ctx);
 	if(connecting_list) list_destroy(connecting_list);
 	if(connected_list) list_destroy(connected_list);
 	if(timer_event) event_free(timer_event);
-	if(sending_event) event_free(sending_event);
-	if(send_efd!=-1) close(send_efd);
-	if(send_q) queue_free(send_q);
+	if(data_event) event_free(data_event);
+	if(data_efd!=-1) close(data_efd);
+	if(data_q) queue_free(data_q);
+	if(control_event) event_free(control_event);
+	if(control_efd!=-1) close(control_efd);
+	if(control_q) queue_free(control_q);
 	if(base) event_base_free(base);
 	return NULL;
 }

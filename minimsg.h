@@ -249,7 +249,6 @@ int add_msg_clients(msg_client_t* c,int type,const char* location, int port,int 
 int connect_msg_clients(msg_client_t* c);
 void msg_client_send(msg_client_t* clients, const char* server_location,msg_t* m);
 
-minimsg_context_t* minimsg_create_context();
 minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int socket_type);
 int minimsg_connect(minimsg_socket_t* s,struct sockaddr_in server);
 msg_t* minimsg_recv(minimsg_socket_t* s);
@@ -258,7 +257,7 @@ msg_t* minimsg_recv(minimsg_socket_t* s);
  *  the message would be free if it is sent successfully
  */
 int minimsg_send(minimsg_socket_t* s, msg_t* m);
-
+minimsg_context_t* minimsg_create_context();
 int minimsg_free_context(minimsg_context_t* ctx);
 /*
  *  minimsg_free_socket
