@@ -126,6 +126,7 @@ typedef struct _msg_state{
 									   */
 	int refcnt;
 	pthread_spinlock_t lock;          /* lock for reference counter */	
+	list_node_t * ln;
 }fd_state_t;
 
 struct _msg_server{
@@ -167,7 +168,10 @@ struct _minimsg_socket{
 						  * 	 isClient = 0, it is the currently processing session
 						  *  For client, when it is NULL, network is not established yet.
 						  */
+	list_node_t* ln; /* linked in sk_list */
+	list_t* fd_list;
 	/* client */
+	int is_connecting; 
 	struct sockaddr_in server; /* server address */
 	/* server */
 	struct event* listener_event;
@@ -192,7 +196,6 @@ typedef struct _minimsg_context{
 	struct event* timeout_event;  /* for auto connect */
 	list_t* connecting_list;      /* a list of connecting socket for auto connect*/
 	list_t* sk_list;              /* a list of created socket  */
-	list_t* fd_list;              /* a list of created fd_state_t* */
 }minimsg_context_t;
 
 /* ----------------------
