@@ -24,7 +24,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#define TIMEOUT_SECONDS 3000
+#define TIMEOUT_SECONDS 3
 typedef struct _server_thread_data{
 	void* msg;
 	fd_state_t* fds;
@@ -45,26 +45,25 @@ static void free_network_rw_event(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
 static void* msg_server_thread_task_wrapper(void* arg);
-static void sigusr1_func(evutil_socket_t fd, short event, void *arg);
 
 static int check_recv_state(const minimsg_socket_t* s);
 static int check_send_state(const minimsg_socket_t* s);
 
 static void update_socket_state(minimsg_socket_t* s);
 static void sending_handler(evutil_socket_t fd, short events, void *arg);
-static void add_to_connecting_list(minimsg_context_t* ctx, minimsg_socket_t* s);
 static void add_to_connected_list(minimsg_socket_t* ss, fd_state_t* fds);
 
 static void send_control_message(minimsg_context_t* ctx, msg_t* m);
 /*
  * control message to stop the network I/O thread
  */
-static void kill_thread(minimsg_context_t* ctx)
+static void kill_thread(minimsg_context_t* ctx);
 
 static void control_handler(evutil_socket_t fd, short events, void *arg);
+static void sigusr1_handler(evutil_socket_t fd, short event, void *arg);
 
 
-static int _minimsg_free_socket(minimsg_socket_t* s);
+static void _minimsg_free_socket(minimsg_socket_t* s);
 static int _minimsg_connect(minimsg_socket_t* s);
 static void data_handler(evutil_socket_t fd, short events, void *arg);
 
@@ -627,6 +626,10 @@ recv_frame_content:
 					else{
 						qdata->msg = fds->recv_msg;
 						fds->recv_msg = NULL;
+						pthread_spin_lock(&server->lock);
+						/* reference count for pushing into queue */
+							fds->refcnt++; 
+						pthread_spin_unlock(&server->lock);
 						qdata->fds = fds;
 						pthread_spin_lock(&server->lock);
 						queue_push( server->recv_q,(void*)qdata); 
@@ -745,24 +748,19 @@ static int free_fd_state(fd_state_t *state)
    
     msg_t* m;
     queue_data_t* qd;
-    minimsg_socket_t* ss;
     int refcnt;
     queue_t* q;
     queue_t* tmp;
-    dbg("\n");
+   
     pthread_spin_lock(&state->lock);
 		state->refcnt--;
 		refcnt = state->refcnt;
     pthread_spin_unlock(&state->lock);
     
     if(refcnt == 0){
+		 dbg("\n");
 	free_network_rw_event(state);
 	
-	ss = state->minimsg_socket;
-	
-	pthread_spin_lock(&ss->lock);
-		list_remove(ss->fd_list,state->ln);
-	pthread_spin_unlock(&ss->lock);
 	
 	if(state->send_msg){
                 msg_free(state->send_msg);
@@ -791,9 +789,10 @@ static fd_state_t * alloc_fd_state(minimsg_socket_t* ss, evutil_socket_t fd)
 	minimsg_context_t* ctx = ss->ctx;
     struct event_base* base = ctx->base;
     fd_state_t *state = malloc(sizeof(fd_state_t));
+    dbg("\n");
     if (!state)
         return NULL;
-
+	
 	if(pthread_spin_init(&state->lock,0)!=0) handle_error("pthread spin_init fails");
 
    
@@ -996,12 +995,12 @@ void free_msg_server(msg_server_t* server)
 	event_free(server->sigusr1_event);
 	free(server);
 }
-static void sigusr1_func(evutil_socket_t fd, short event, void *arg)
+static void sigusr1_handler(evutil_socket_t fd, short event, void *arg)
 {
-	msg_server_t* server = (msg_server_t*)arg;
-	printf("%s: got signal\n",__func__);	
-	//event_base_dump_events(server->base,stdout);
-    	free_msg_server(server);
+	minimsg_context_t * ctx = (minimsg_context_t* ) arg;
+	dbg("got signal\n");
+	minimsg_free_context(ctx);
+	exit(0);
 }
 
 msg_client_t* create_msg_clients()
@@ -1093,24 +1092,35 @@ static void* thread_handler(void* arg)
 static void timeout_handler(int fd, short event, void *arg)
 {
 	minimsg_context_t* ctx = (minimsg_context_t* ) arg;
-	minimsg_socket_t* s;
+	minimsg_socket_t* ss;
 	list_node_t* it;
-	fd_state_t* state;
-	int one = 1;
+	list_t* list,*tmp;
+	
 	dbg("timeout\n");
+	list = list_new();
+	if(!list){
+		dbg("list_new() fails\n");
+		return;
+	}
+	
+	pthread_spin_lock(&ctx->lock);
+		tmp = ctx->connecting_list;
+		ctx->connecting_list = list;
+		list = tmp;
+	pthread_spin_unlock(&ctx->lock);
 	while(1){
-		pthread_spin_lock(&ctx->lock);
-			it = list_lpop(ctx->connecting_list);
-		pthread_spin_unlock(&ctx->lock);
+		it = list_lpop(list);
 		if(it == NULL) break;
-		s = (minimsg_socket_t*)it->val;	
-		if(minimsg_connect(s,s->server) == MINIMSG_FAIL){
+		ss = (minimsg_socket_t*)it->val;	
+		if(_minimsg_connect(ss) == MINIMSG_FAIL){
 			dbg("connect still fails\n");
 		}
 		else{
-			dbg("connect succeeds not in first time\n");
+			dbg(" connect succeeds not in first time\n");
 		}
 	}
+	
+	list_destroy(list);
     printf("leave timeout\n");
         
 }
@@ -1123,7 +1133,7 @@ minimsg_context_t* minimsg_create_context()
 	int s;
 	minimsg_context_t * ctx = NULL;
 	struct event* timer_event = NULL;
-	struct event* data_event = NULL, *control_event = NULL;
+	struct event* data_event = NULL, *control_event = NULL,* sigusr1_event = NULL;
 	void* base = NULL;
 	queue_t * data_q = NULL,* control_q = NULL;
 	int data_efd = -1, control_efd = -1;
@@ -1141,7 +1151,8 @@ minimsg_context_t* minimsg_create_context()
 	data_event=event_new(base, data_efd, EV_READ|EV_PERSIST, data_handler, (void*)ctx );
 	control_event=event_new(base, control_efd, EV_READ|EV_PERSIST, control_handler, (void*)ctx );
 	timer_event = event_new(base,-1, EV_TIMEOUT |EV_PERSIST,timeout_handler,(void*)ctx);
-	if(!data_event || !control_event || !timer_event) goto error;
+	sigusr1_event = evsignal_new(base,SIGUSR1,sigusr1_handler,(void*)ctx);
+	if(!data_event || !control_event || !timer_event || !sigusr1_event) goto error;
 	   
     data_q = queue_alloc();
     control_q = queue_alloc();
@@ -1152,7 +1163,8 @@ minimsg_context_t* minimsg_create_context()
 	
 	if(!connecting_list || !sk_list) goto error;
 	
-	if(event_add(timer_event,&tv)== -1 || event_add(data_event, NULL) == -1 || event_add(control_event, NULL) == -1)goto error;
+	if(event_add(timer_event,&tv)== -1 || event_add(data_event, NULL) == -1 || 
+	event_add(control_event, NULL) == -1 || event_add(sigusr1_event, NULL) == -1)goto error;
 
 	ctx->base = base;
 	ctx->data_q = data_q;
@@ -1164,6 +1176,7 @@ minimsg_context_t* minimsg_create_context()
 	ctx->timeout_event = timer_event;
 	ctx->data_event = data_event;
 	ctx->control_event = control_event;
+	ctx->sigusr1_event = sigusr1_event;
 	
 	if(pthread_spin_init(&ctx->lock,0)!=0) goto error;
 	s = pthread_create(&ctx->thread,NULL,thread_handler,(void*)ctx);
@@ -1175,17 +1188,6 @@ minimsg_context_t* minimsg_create_context()
 	return ctx;
 error:
 	handle_error("memory allocation fails\n");
-	if(ctx)free(ctx);
-	if(connecting_list) list_destroy(connecting_list);
-	if(sk_list) list_destroy(sk_list);
-	if(timer_event) event_free(timer_event);
-	if(data_event) event_free(data_event);
-	if(data_efd!=-1) close(data_efd);
-	if(data_q) queue_free(data_q);
-	if(control_event) event_free(control_event);
-	if(control_efd!=-1) close(control_efd);
-	if(control_q) queue_free(control_q);
-	if(base) event_base_free(base);
 	return NULL;
 }
 /*
@@ -1196,8 +1198,6 @@ error:
 minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 {
 	minimsg_socket_t* s;
-	list_t* l;
-	list_node_t* ln;
 	s = (minimsg_socket_t*) malloc( sizeof( minimsg_socket_t));
 	if(!s) return NULL;
 
@@ -1208,6 +1208,8 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	s->type = type;
 	s->ctx = ctx;
 	s->isClient = 0;
+	s->listener_event = NULL;
+	s->connection_state = 0;
 	s->current = NULL;
 	if(type == MINIMSG_REQ){
 		s->state = MINIMSG_SOCKET_STATE_SEND;
@@ -1219,24 +1221,18 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 		//TODO
 		handle_error("not implemented\n");
 	}
-	
-	if(pthread_spin_init(&s->lock,0)!=0) handle_error("pthread_spin_init");
-	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL || ln == NULL){
-		if(s->recv_q) queue_free(s->recv_q);
-		if(s->recv_efd !=-1) close(s->recv_efd);
-		if(s->pending_send_q) queue_free(s->pending_send_q);
-		if(ln) free(ln);
-		free(s);
-		return NULL;
-	}
 	s->ln = list_node_new(s);
-	if(!s->ln) handle_error("fail to list_node_new()\n");
+	s->fd_list = list_new();
+	if(pthread_spin_init(&s->lock,0)!=0) handle_error("pthread_spin_init");
+	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL || s->ln == NULL || s->fd_list == NULL){
+		handle_error("some memory can't be allocated in minimsg_create_socket\n");
+	}
+	
 	pthread_spin_lock(&ctx->lock);
 		list_rpush(ctx->sk_list,s->ln);	
 	pthread_spin_unlock(&ctx->lock);
 	
-	s->fd_list = list_new();
-	if(!s->fd_list) handle_error("fail to list_new()\n");
+	
 	return s;
 }
 
@@ -1244,8 +1240,11 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
 {
 	minimsg_context_t* ctx;
 	msg_t* m;
+	dbg("addr = %p\n",s);
 	m = msg_alloc();
 	if(!m) return MINIMSG_FAIL;
+	s->isClient = 1;
+	s->connection_state = 1;
 	s->server = server; 
 	ctx = s->ctx;
 	msg_append_string(m,"connect");
@@ -1255,15 +1254,21 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
 	return MINIMSG_OK;
 }
 
-static int _minimsg_connect(minimsg_socket_t* s)
+static int _minimsg_connect(minimsg_socket_t* ss)
 {	
 	int sock;
 	const char* str;
 	fd_state_t* state;
 	int one=1;
-	struct sockaddr_in server = s->server;
-	s->isClient = 1;
-	s->is_connecting = 0;
+	uint64_t uw;
+	ssize_t s;
+	queue_data_t* qd;
+	msg_t* m;
+	int num;
+	minimsg_context_t* ctx = ss->ctx;
+	struct sockaddr_in server = ss->server;
+	
+	dbg("\n");
 	if(server.sin_family == AF_INET){
 			sock = socket(AF_INET,SOCK_STREAM,0);
         	if(sock == -1)
@@ -1272,32 +1277,65 @@ static int _minimsg_connect(minimsg_socket_t* s)
         	        return MINIMSG_FAIL;
         	}
         	puts("Socket created");
-			s->server = server;
+			ss->server = server;
 			//TODO, add it to event
-        	
-        	if (connect(sock,(struct sockaddr*)&s->server,sizeof(s->server))<0){
+        	if (connect(sock,(struct sockaddr*)&ss->server,sizeof(ss->server))<0){
 				/* add it to connecting pool */
 					close(sock);
-					s->is_connecting = 1;
-					add_to_connecting_list(s->ctx,s);
-        	        perror("connect failed.");
-        	        return MINIMSG_FAIL;
+					
+					pthread_spin_lock(&ctx->lock);
+						list_rpush(ctx->connecting_list,ss->ln);
+					pthread_spin_unlock(&ctx->lock);
+					
+					dbg("connect fails\n");
+					return MINIMSG_FAIL;
         	}
+        	dbg("connect succeeds\n");
         	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 			evutil_make_socket_nonblocking(sock);
-			state = alloc_fd_state(s, sock);
-			s->current= state;
+			state = alloc_fd_state(ss, sock);
+			ss->current= state;
+			pthread_spin_lock(&ss->lock);
+			ss->connection_state = 2;
+			pthread_spin_unlock(&ss->lock);
+			/* reference count for client  */
 			state->refcnt++;
-			add_to_connected_list(s,state);
+			add_to_connected_list(ss,state);
 			assert(state); /*XXX err*/
 			assert(state->write_event);
 			event_add(state->read_event, NULL);
+			
+			/* add all msg in pending_q to data_q */
+			dbg("connect succeeds not in first time\n");
+			/* no one would operate pending_send_q at this moment  so no lock */
+			num = queue_size(ss->pending_send_q);
+			dbg("there are %d pending messages to be sent\n",num);
+			while( m = queue_pop(ss->pending_send_q) ){	
+				qd = (queue_data_t*) malloc( sizeof( queue_data_t) );
+				if(!qd) handle_error("malloc fails\n");
+				if( ss->isClient == 0) handle_error("socket is not client \n");
+				if( ss->current == NULL) handle_error("ss->current is NULL\n");
+				qd->fds = ss->current;
+				qd->msg = m;
+				pthread_spin_lock(&ctx->lock);
+					queue_push( ctx->data_q,qd);
+				pthread_spin_unlock(&ctx->lock);
+			}
+			
+			if(num > 0){
+				uw = num;
+				/* write is thread safe */
+				s = write(ctx->data_efd, &uw, sizeof(uint64_t));
+				if (s != sizeof(uint64_t)) handle_error("write");
+			}
+			
+			
+			return MINIMSG_OK;
 	}
 	else{
 		//TODO
 		handle_error("not implemented\n");
 	}
-	return MINIMSG_OK;
 }
 int minimsg_bind(minimsg_socket_t* s, unsigned port)
 {
@@ -1344,10 +1382,11 @@ int minimsg_send(minimsg_socket_t* ss, msg_t* m)
 	if(check_send_state(ss) == MINIMSG_FAIL){
 		handle_error("fail to pass check_send_state\n");
 	}
-	if( ss->is_connecting == 0)	goto job;
-	
+	/* slight optimization to avoid lock when connection state is 2, it is always 2 */
+	if(ss->isClient == 0 ||  ss->connection_state == 2)	goto job;
+	else if ( ss->connection_state == 0) handle_error("haven't called minimsg_connect yet\n");
 	pthread_spin_lock(&ss->lock);
-	if( ss->is_connecting == 1){
+	if( ss->connection_state == 1){
 		queue_push(ss->pending_send_q,m);
 		pthread_spin_unlock(&ss->lock);
 		goto end;
@@ -1496,12 +1535,7 @@ static void sending_handler(evutil_socket_t fd, short events, void *arg)
 		free(qdata);
     }	
 }
-static void add_to_connecting_list(minimsg_context_t* ctx, minimsg_socket_t* s)
-{
-	pthread_spin_lock(&ctx->lock);
-		list_rpush(ctx->connecting_list,s->ln);
-	pthread_spin_unlock(&ctx->lock);
-}
+
 static void add_to_connected_list(minimsg_socket_t* ss, fd_state_t* fds)
 {
 	pthread_spin_lock(&ss->lock);
@@ -1511,9 +1545,15 @@ static void add_to_connected_list(minimsg_socket_t* ss, fd_state_t* fds)
 int minimsg_free_socket(minimsg_socket_t* s)
 {
 	msg_t* m;
-	minimsg_context_t* ctx;
+	minimsg_context_t* ctx = s->ctx;
+	dbg("addr = %p\n",s);
 	m = msg_alloc();
 	if(!m)return MINIMSG_FAIL;
+	
+	pthread_spin_lock(&ctx->lock);
+		list_remove(ctx->sk_list,s->ln);
+	pthread_spin_unlock(&ctx->lock);
+	s->ln = NULL;
 	
 	msg_append_string(m,"free socket");
 	msg_append_string_f(m,"%p",s);
@@ -1524,15 +1564,14 @@ int minimsg_free_socket(minimsg_socket_t* s)
 static void kill_thread(minimsg_context_t* ctx)
 {
 	msg_t* m;
+	dbg("\n");
 	m = msg_alloc();
-	if(!m)return MINIMSG_FAIL;
-	
+	if(!m) handle_error("msg_alloc fails\n");
 	msg_append_string(m,"kill");
-	msg_append_string_f(m,"%p",ctx);
 	send_control_message(ctx, m);
 	
 }
-static int _minimsg_free_socket(minimsg_socket_t* s)
+static void _minimsg_free_socket(minimsg_socket_t* s)
 {	
 	msg_t* m;
 	queue_data_t* qd;
@@ -1541,75 +1580,64 @@ static int _minimsg_free_socket(minimsg_socket_t* s)
 	minimsg_socket_t* ss,*tmp;
 	list_node_t *ln,*prev = NULL;
 	list_iterator_t* it;
-	pthread_spin_lock(&ctx->lock);
+	dbg("\n");
+	ctx = s->ctx;
 		/* remove from fd_list */
-		it = list_iterator_new(s->fd_list, LIST_HEAD);
-		while( ln = list_iterator_next(it) ){
-			if(prev){
-				free_fd_state( (fd_state_t*) prev->val);
-				list_remove(s->fd_list,prev);
-			}
-			prev= NULL;
-			state = (fd_state_t*)ln->val;
-			if(state->minimsg_socket == s) prev= ln;
-		}
-		if(prev){
-			free_fd_state( (fd_state_t*) prev->val);
-			list_remove(s->fd_list,prev);
-		}
-		list_iterator_destroy(it);
-		/* remove from sk_list */
-		it = list_iterator_new(ctx->sk_list, LIST_HEAD);
-		while( ln = list_iterator_next(it)){
-			ss = (minimsg_socket_t*) ln->val;
-			if( ss == s){
-				dbg("remove minimsg socket from sk list\n");
-				minimsg_free_socket(ss);
-				list_remove(ctx->sk_list,ln);
-				break;
-			}
-		}
-		list_iterator_destroy(it);
+	dbg("remove all fd in fd_list\n");
+	while( ln = list_lpop(s->fd_list)){
+		dbg("free fd state: %p\n",(void*)ln->val);
+		free_fd_state( (fd_state_t*) ln->val);
+		free(ln);
+	}
+	dbg("destroy fd_list\n");
+	list_destroy(s->fd_list);
+		
+	pthread_spin_lock(&ctx->lock);
 		/* remove from connecting list */
+		dbg("try to remove socket from connecting list if it is there\n");
 		it = list_iterator_new(ctx->connecting_list, LIST_HEAD);
 		while( ln = list_iterator_next(it)){
 			ss = (minimsg_socket_t*) ln->val;
 			if( ss == s){
 				dbg("remove minimsg socket from connecting list\n");
-				minimsg_free_socket(ss);
 				list_remove(ctx->connecting_list,ln);
 				break;
 			}
 		}
 		list_iterator_destroy(it);
-		
 	pthread_spin_unlock(&ctx->lock);
 	
-	
-	pthread_spin_lock(&s->lock);
+	dbg("free msg in pending_send_q\n");
 		while( m = queue_pop(s->pending_send_q)){
 			msg_free(m);
 		}
-	pthread_spin_unlock(&s->lock);
-	
+	dbg("free pending_send_q\n");
 	queue_free(s->pending_send_q);
 	
-	pthread_spin_lock(&s->lock);
+	
 	while(qd = queue_pop(s->recv_q)){
 		msg_free(qd->msg);
 		free_fd_state(qd->fds);
 		free(qd);
 	}
-	pthread_spin_unlock(&s->lock);
+	queue_free(s->recv_q);
+	
 	close(s->recv_efd);
 	pthread_spin_destroy(&s->lock);
 	if(s->isClient){
-		if(s->current) free_fd_state(s->current);
+		if(s->current){
+			dbg("socket is client so free_fd_state()\n");
+			free_fd_state(s->current);
+			s->current = NULL;
+		}
 	}
-	pthread_spin_lock(&ctx->lock);
-		list_remove(ctx->sk_list,s->ln);
-	pthread_spin_unlock(&ctx->lock);
-	if(s->listener_event) event_free(s->listener_event);
+	
+	
+	if(s->listener_event){
+		dbg("event_free listener event\n");
+		event_free(s->listener_event);
+	}
+	free(s);
 }
 /*
  *  minimsg_free_context
@@ -1625,17 +1653,18 @@ int minimsg_free_context(minimsg_context_t* ctx)
 	list_node_t* ln;
 	queue_data_t* qd;
 	msg_t* m;
-	
-	if(kill_thread(ctx) == MINIMSG_FAIL) handle_error("fails\n");
+	dbg("\n");
+	kill_thread(ctx);
 	pthread_join(ctx->thread,NULL);
-	
+	dbg("free minimsg socket\n");
 	while( ln = list_lpop(ctx->sk_list)){
+		dbg("free sk\n");
 		sk = (minimsg_socket_t*)ln->val;
 		_minimsg_free_socket(sk);
 		free(ln);
 	}
 	list_destroy(ctx->sk_list);
-	
+	dbg("free ctx->connecting list\n");
 	while( ln = list_lpop(ctx->connecting_list)){
 		free(ln);
 	}
@@ -1661,7 +1690,7 @@ int minimsg_free_context(minimsg_context_t* ctx)
 		msg_free(m);
 	}
 	queue_free(ctx->control_q);
-	
+	event_free(ctx->sigusr1_event);
 	event_base_free(ctx->base);
 	free(ctx);
 }
@@ -1669,6 +1698,7 @@ static void send_control_message(minimsg_context_t* ctx, msg_t* m)
 {
 	uint64_t s;
 	ssize_t u;
+	dbg("\n");
 	pthread_spin_lock(&ctx->lock);
 		queue_push(ctx->control_q,m); 
 	pthread_spin_unlock(&ctx->lock);
@@ -1708,18 +1738,20 @@ static void control_handler(evutil_socket_t fd, short events, void *arg)
 		/* free minimsg_socket */
 		if(!strcmp(type,"free socket")){
 			//TODO, atoi is not the right type 
-			dbg("free minimsg_socket %p\n",(void*)ptr_addr);
-			ptr_addr = strtoul (msg_content_at_frame(m,1), NULL, 10);
-			ss = (minimsg_socket_t*) ptr_addr;
+			dbg("content = %s\n",msg_content_at_frame(m,1));
+			ss =(minimsg_socket_t*) strtoul (msg_content_at_frame(m,1), NULL, 16);
+			dbg("free minimsg socket %p\n",(void*)ss);
 			_minimsg_free_socket(ss);
 		}
 		else if(!strcmp(type,"connect")){
-			ptr_addr = strtoul (msg_content_at_frame(m,1), NULL, 10);
-			ss = (minimsg_socket_t*) ptr_addr;
+			dbg("recv msg connect\n");
+			ss = (minimsg_socket_t*)strtoul (msg_content_at_frame(m,1), NULL, 16);
+			dbg("addr = %p\n",(void*)ss);
 			_minimsg_connect(ss);
 		}
 		else if(!strcmp(type,"kill")){
-			
+			dbg("receive msg kill\n");
+			if(event_base_loopbreak(ctx->base) == -1) handle_error("event_base_loopbreak fails\n");
 		}
 		msg_free(m);
 	} /* end for */
@@ -1747,6 +1779,7 @@ static void data_handler(evutil_socket_t fd, short events, void *arg)
 			qdata = (queue_data_t*) queue_pop(ctx->data_q);
         pthread_spin_unlock(&ctx->lock);
 		fds = qdata->fds;
+		dbg("refcnt = %d\n",fds->refcnt);
 		if(free_fd_state(fds) > 0 && fds->send_state!=-1){
 			dbg("message to send\n");
 		//	msg_print(qdata->msg);

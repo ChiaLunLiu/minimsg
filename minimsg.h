@@ -171,7 +171,7 @@ struct _minimsg_socket{
 	list_node_t* ln; /* linked in sk_list */
 	list_t* fd_list;
 	/* client */
-	int is_connecting; 
+	int connection_state;      /* 0: not connected yet ; 1: connecting ; 2 : connected */ 
 	struct sockaddr_in server; /* server address */
 	/* server */
 	struct event* listener_event;
@@ -181,7 +181,7 @@ struct _minimsg_socket{
 typedef struct _minimsg_context{
 	void * base;
 	pthread_t thread;            /* network I/O thread */
-	
+	struct event*  sigusr1_event;
 	/* the following 3 variables builds event that sends control message to network I/O thread */
 	queue_t* control_q;
 	int control_efd;  

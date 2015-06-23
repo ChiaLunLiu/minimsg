@@ -34,6 +34,6 @@ int main()
 	minimsg_send(socket,m);
 	}
 	
-	minimsg_free_context();
+	minimsg_free_context(ctx);
 	return 0;
 }

@@ -4,8 +4,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #ifdef DEBUG
- #define dbg(fmt, args...) do{ fprintf(stderr, "%s(%d)/%s: " fmt, \
-    __FILE__, __LINE__, __func__, ##args); }while(0)
+ #define dbg(fmt, args...) do{ fprintf(stderr, "%s/%s(%d): " fmt, \
+     __func__,__FILE__, __LINE__, ##args); }while(0)
 #else
  #define dbg(fmt, args...) do{}while(0)/* Don't do anything in release builds */
 #endif

@@ -18,9 +18,9 @@ int main()
 		return 0;
 	}
 	printf("created\n");
-/*	socket = minimsg_create_socket(ctx,MINIMSG_REQ);
+	socket = minimsg_create_socket(ctx,MINIMSG_REQ);
 	printf("socket is created\n");
-	
+
 	if(minimsg_connect(socket,server) == MINIMSG_OK){
 		printf("connected\n");
 	}
@@ -28,11 +28,10 @@ int main()
 		printf("fail to connect\n");
 		return 0;
 	}
-	
+
 	printf("cleints sends message\n");
 	m = msg_alloc();
 	msg_append_string(m,"hi from client");
-	
 	minimsg_send(socket,m);
 	
 	m = minimsg_recv(socket);
@@ -40,9 +39,11 @@ int main()
 	printf("client receives message\n");
 	msg_print(m);
 	msg_free(m);
+	printf("minimsg free socket\n");
 	minimsg_free_socket(socket);
 	/* free all memory including minimsg_socket 
 	*/
+	printf("minimsg free context\n");
 	minimsg_free_context(ctx);
 	return 0;
 }
