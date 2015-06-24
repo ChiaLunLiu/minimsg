@@ -3,3 +3,4 @@
 (OK) 3. start client first, then server
 (OK) 4. server disconnect, client has to know that.
 (OK) 5. two clients in one program
+(OK) 6. two hybrid programs communicate with each other ( hybrid1.c , hybrid2.c )
