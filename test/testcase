@@ -1,0 +1,4 @@
+(OK) 1.connect server with one client, and send many messages 
+(OK) 2.connect server with two clients
+(OK) 3. start client first, then server
+(OK) 4. server disconnect, client has to know that.
