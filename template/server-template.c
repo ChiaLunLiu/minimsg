@@ -23,7 +23,6 @@ int main()
 		
 	while(1){
 	m = minimsg_recv(socket);
-	
 	printf("server receives message\n");
 	msg_print(m);
 	

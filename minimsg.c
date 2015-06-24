@@ -51,7 +51,6 @@ static int check_send_state(const minimsg_socket_t* s);
 
 static void update_socket_state(minimsg_socket_t* s);
 static void sending_handler(evutil_socket_t fd, short events, void *arg);
-static void add_to_connected_list(minimsg_socket_t* ss, fd_state_t* fds);
 
 static void send_control_message(minimsg_context_t* ctx, msg_t* m);
 /*
@@ -723,18 +722,36 @@ do_read(evutil_socket_t fd, short events, void *arg)
     }
 }
 */
+/* free_network_rw_event
+ * free network event when the connection is down
+ * if the socket is a client, send disconnect control message to
+ * notify network disconnect
+ */ 
 static void free_network_rw_event(fd_state_t *state)
 {
+	minimsg_socket_t* ss;
+	msg_t* m;
+	ss = state->minimsg_socket;
 	
-    	if(state->read_event){
+	if(ss->isClient && state->send_state != -1){
+		m = msg_alloc();
+		if(m){
+			msg_append_string(m,"disconnect");
+			pthread_spin_lock(&ss->lock);
+				queue_push(ss->control_q,m);
+			pthread_spin_unlock(&ss->lock);
+		}
+	}
+    if(state->read_event){
 		event_free(state->read_event);
 		state->read_event = NULL;
 	}
 
-        if(state->write_event){
+    if(state->write_event){
 		event_free(state->write_event);
 		state->write_event = NULL;
-        }
+    }
+    
 	state->send_state = state->recv_state = -1;
 }
 
@@ -868,7 +885,6 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
         if(state){
 			assert(state); /*XXX err*/
 			assert(state->write_event);
-			add_to_connected_list(server,state);
 			event_add(state->read_event, NULL);
 		}
 		else{
@@ -1204,6 +1220,7 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	s->pending_send_q = queue_alloc();
 	s->recv_q = queue_alloc();
 	s->recv_efd = eventfd(0,0);
+	s->control_q = queue_alloc();
 	s->listener = -1;
 	s->type = type;
 	s->ctx = ctx;
@@ -1224,7 +1241,8 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	s->ln = list_node_new(s);
 	s->fd_list = list_new();
 	if(pthread_spin_init(&s->lock,0)!=0) handle_error("pthread_spin_init");
-	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL || s->ln == NULL || s->fd_list == NULL){
+	if(  s->recv_q == NULL || s->recv_efd  == -1  || s->pending_send_q == NULL || s->ln == NULL || 
+	s->fd_list == NULL  || s->control_q == NULL){
 		handle_error("some memory can't be allocated in minimsg_create_socket\n");
 	}
 	
@@ -1300,7 +1318,6 @@ static int _minimsg_connect(minimsg_socket_t* ss)
 			pthread_spin_unlock(&ss->lock);
 			/* reference count for client  */
 			state->refcnt++;
-			add_to_connected_list(ss,state);
 			assert(state); /*XXX err*/
 			assert(state->write_event);
 			event_add(state->read_event, NULL);
@@ -1430,14 +1447,36 @@ end:
 	update_socket_state(ss);
 	return  fail? MINIMSG_FAIL : MINIMSG_OK;
 }
+/*
+ * minimsg_recv
+ * 1) read control msg first and process it
+ * 2) read msg data from ss->recv_q
+ */
 msg_t* minimsg_recv(minimsg_socket_t* ss)
 {
 	msg_t* m;
 	queue_data_t* qd;
 	uint64_t ur;
     ssize_t s;
+    const char * str;
     if(check_recv_state(ss) == MINIMSG_FAIL){
 			handle_error("fail to pass check_recv_state\n");
+	}
+	if(ss->isClient){
+		while(1){
+			pthread_spin_lock(&ss->lock);
+			m = queue_pop(ss->control_q);
+			pthread_spin_unlock(&ss->lock);
+			if(m == NULL)break;
+			dbg("process control message\n");
+			str = msg_content_at_frame(m,0);
+			if(!strcmp(str,"disconnect")){
+				dbg("the network is closed\n");
+				msg_free(m);
+				return NULL;
+			}
+			msg_free(m);
+		}
 	}
 	dbg("pass check_recv_state\n");
 	dbg("waiting for reading ... \n");
@@ -1536,12 +1575,7 @@ static void sending_handler(evutil_socket_t fd, short events, void *arg)
     }	
 }
 
-static void add_to_connected_list(minimsg_socket_t* ss, fd_state_t* fds)
-{
-	pthread_spin_lock(&ss->lock);
-		list_rpush(ss->fd_list,fds->ln);
-	pthread_spin_unlock(&ss->lock);
-}
+
 int minimsg_free_socket(minimsg_socket_t* s)
 {
 	msg_t* m;
@@ -1623,6 +1657,11 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	queue_free(s->recv_q);
 	
 	close(s->recv_efd);
+	
+	while( m =queue_pop(s->control_q)){
+		msg_free(m);
+	}
+	queue_free(s->control_q);
 	pthread_spin_destroy(&s->lock);
 	if(s->isClient){
 		if(s->current){

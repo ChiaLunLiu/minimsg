@@ -1,5 +1,5 @@
 
-DEBUG=-DDEBUG=1
+DEBUG= #-DDEBUG=1
 all:
 	gcc client-template.c -o client -O2 -lminimsg -levent ${DEBUG}
 	gcc server-template.c -o server -O2 -lminimsg -levent ${DEBUG}

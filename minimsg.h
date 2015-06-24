@@ -173,6 +173,10 @@ struct _minimsg_socket{
 	/* client */
 	int connection_state;      /* 0: not connected yet ; 1: connecting ; 2 : connected */ 
 	struct sockaddr_in server; /* server address */
+	queue_t* control_q;        /* control_q and control_efd receives control message 
+								* from network I/O thread 
+								* for example, the network is closed 
+								*/
 	/* server */
 	struct event* listener_event;
 	evutil_socket_t listener; /* server_sock */ 
