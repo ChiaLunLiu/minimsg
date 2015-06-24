@@ -1137,7 +1137,7 @@ static void timeout_handler(int fd, short event, void *arg)
 	}
 	
 	list_destroy(list);
-    printf("leave timeout\n");
+    dbg("leave timeout\n");
         
 }
 /*
@@ -1658,10 +1658,8 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	
 	close(s->recv_efd);
 	
-	while( m =queue_pop(s->control_q)){
-		msg_free(m);
-	}
-	queue_free(s->control_q);
+	
+	
 	pthread_spin_destroy(&s->lock);
 	if(s->isClient){
 		if(s->current){
@@ -1670,8 +1668,12 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 			s->current = NULL;
 		}
 	}
-	
-	
+	/* free_fd_state would send msg to s->control_q
+	 * so free control_q later than free_fd_state */
+	while( m =queue_pop(s->control_q)){
+		msg_free(m);
+	}
+	queue_free(s->control_q);
 	if(s->listener_event){
 		dbg("event_free listener event\n");
 		event_free(s->listener_event);
