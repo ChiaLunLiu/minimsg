@@ -625,10 +625,12 @@ recv_frame_content:
 					else{
 						qdata->msg = fds->recv_msg;
 						fds->recv_msg = NULL;
-						pthread_spin_lock(&server->lock);
-						/* reference count for pushing into queue */
-							fds->refcnt++; 
-						pthread_spin_unlock(&server->lock);
+						if(server->isClient == 0 ){
+							pthread_spin_lock(&server->lock);
+							/* reference count for pushing into queue */
+								fds->refcnt++; 
+							pthread_spin_unlock(&server->lock);
+						}
 						qdata->fds = fds;
 						pthread_spin_lock(&server->lock);
 						queue_push( server->recv_q,(void*)qdata); 
@@ -768,11 +770,11 @@ static int free_fd_state(fd_state_t *state)
     int refcnt;
     queue_t* q;
     queue_t* tmp;
-   
-    pthread_spin_lock(&state->lock);
+    minimsg_socket_t* ss = state->minimsg_socket;
+    pthread_spin_lock(&ss->lock);
 		state->refcnt--;
 		refcnt = state->refcnt;
-    pthread_spin_unlock(&state->lock);
+    pthread_spin_unlock(&ss->lock);
     
     if(refcnt == 0){
 		 dbg("\n");
@@ -1424,20 +1426,23 @@ job:
 	
 	qd = (queue_data_t*) malloc( sizeof( queue_data_t) );
 	if(!qd) handle_error("malloc fails\n");
-		
-	if(ss->isClient){
-		qd->fds = ss->current;
-	}
-	else{
-		/* TODO, further improvement is needed when server
-		* wants to start sending data first 
-		*/
-		qd->fds = ss->current;
-	}
+	
+	
+	qd->fds = ss->current;
 	qd->msg = m;
+	
+	if(ss->isClient == 0){
+		/* add to queue */
+	pthread_spin_lock(&ss->lock);
+		ss->current->refcnt++;
+	pthread_spin_unlock(&ss->lock);
+	}
+	
 	pthread_spin_lock(&ctx->lock);
 		queue_push( ctx->data_q,qd);
 	pthread_spin_unlock(&ctx->lock);
+	/* free ss->current reference */
+	if(ss->isClient == 0)free_fd_state(ss->current);
 	
 	uw = 1;
 	/* write is thread safe */
@@ -1494,9 +1499,11 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 			return NULL;
 		}
 	}
+	
+	
 	pthread_spin_lock(&ss->lock);
 		qd = (queue_data_t*) queue_pop( ss->recv_q);
-		if(ss->isClient == 0){ 
+		if(ss->type != MINIMSG_PULL &&  ss->isClient == 0){
 			ss->current = qd->fds;
 			ss->current->refcnt++;
 		}
@@ -1592,7 +1599,7 @@ int minimsg_free_socket(minimsg_socket_t* s)
 	msg_append_string(m,"free socket");
 	msg_append_string_f(m,"%p",s);
 	send_control_message(ctx, m);
-
+	
 	return MINIMSG_OK;
 }
 static void kill_thread(minimsg_context_t* ctx)
@@ -1805,8 +1812,10 @@ static void data_handler(evutil_socket_t fd, short events, void *arg)
 	ssize_t s;
 	uint64_t u;
 	int i;
+	int num=1;
 	fd_state_t* fds;
 	queue_data_t* qdata;
+	minimsg_socket_t* ss;
 	dbg("\n");
 	ctx = (minimsg_context_t*) arg;
 	
@@ -1820,8 +1829,10 @@ static void data_handler(evutil_socket_t fd, short events, void *arg)
 			qdata = (queue_data_t*) queue_pop(ctx->data_q);
         pthread_spin_unlock(&ctx->lock);
 		fds = qdata->fds;
-		dbg("refcnt = %d\n",fds->refcnt);
-		if(free_fd_state(fds) > 0 && fds->send_state!=-1){
+		ss = fds->minimsg_socket;
+		if(ss->isClient == 0) num = free_fd_state(fds);
+		dbg("refcnt = %d\n",num);
+		if(num > 0 && fds->send_state!=-1){
 			dbg("message to send\n");
 		//	msg_print(qdata->msg);
             queue_push(fds->send_q,qdata->msg);

@@ -1,6 +1,8 @@
 #include <minimsg/minimsg.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sys/epoll.h>
+#define MAXEVENTS 8
 minimsg_socket_t* sk_server, * sk_client;
 
 void* thread_func(void* arg){
@@ -27,12 +29,16 @@ int main()
 	minimsg_context_t* ctx;
 	pthread_t pth;
 	msg_t * m;
+	int epoll_fd;
 	struct sockaddr_in server_addr;
 	int i;
+	struct epoll_event event;
+	struct epoll_event *events;
+
 	server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(12344);
-	
+	epoll_efd = epoll_create1(0);
 	ctx = minimsg_create_context();
 	if(!ctx){
 		fprintf(stderr,"fail to create minimsg context\n");
@@ -56,6 +62,12 @@ int main()
 		printf("fail to connect\n");
 		return 0;
 	}
+	event.data.fd = sfd;
+	event.events = EPOLLIN;
+	i = epoll_ctl (efd, EPOLL_CTL_ADD, sfd, &event);
+	if (i == -1) handle_error("epoll_ctl\n");
+  
+	
 	pthread_create(&pth,NULL,thread_func,NULL);
 	
 	while(1){
