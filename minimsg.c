@@ -25,6 +25,7 @@
 #include <string.h>
 #include <errno.h>
 #define TIMEOUT_SECONDS 3
+#define ONE_CONTROL_MESSAGE ( 1ULL << 31)
 typedef struct _server_thread_data{
 	void* msg;
 	fd_state_t* fds;
@@ -726,23 +727,24 @@ do_read(evutil_socket_t fd, short events, void *arg)
 */
 /* free_network_rw_event
  * free network event when the connection is down
- * if the socket is a client, send disconnect control message to
- * notify network disconnect
+ * if the socket is a client, send control msg to prevent from being blocked
  */ 
 static void free_network_rw_event(fd_state_t *state)
 {
 	minimsg_socket_t* ss;
-	msg_t* m;
+	uint64_t uw ;
+	ssize_t s;
 	ss = state->minimsg_socket;
 	
-	if(ss->isClient && state->send_state != -1){
-		m = msg_alloc();
-		if(m){
-			msg_append_string(m,"disconnect");
-			pthread_spin_lock(&ss->lock);
-				queue_push(ss->control_q,m);
-			pthread_spin_unlock(&ss->lock);
-		}
+	if(ss->isClient && state->send_state !=-1){
+		uw = ONE_CONTROL_MESSAGE;
+		/* write is thread safe */
+		s = write(ss->recv_efd, &uw, sizeof(uint64_t));
+		if (s != sizeof(uint64_t)) handle_error("write");
+	}
+	if(ss->isClient){
+		dbg("close recv_efd for client\n");
+		close(ss->recv_efd);
 	}
     if(state->read_event){
 		event_free(state->read_event);
@@ -753,7 +755,6 @@ static void free_network_rw_event(fd_state_t *state)
 		event_free(state->write_event);
 		state->write_event = NULL;
     }
-    
 	state->send_state = state->recv_state = -1;
 }
 
@@ -1230,12 +1231,10 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	s->listener_event = NULL;
 	s->connection_state = 0;
 	s->current = NULL;
-	if(type == MINIMSG_REQ){
-		s->state = MINIMSG_SOCKET_STATE_SEND;
-	}
-	else if(type == MINIMSG_REP){
-		s->state = MINIMSG_SOCKET_STATE_RECV;
-	}
+	if(type == MINIMSG_REQ)	s->state = MINIMSG_SOCKET_STATE_SEND;
+	else if(type == MINIMSG_REP)s->state = MINIMSG_SOCKET_STATE_RECV;
+	else if(type == MINIMSG_SEND_ONLY)s->state = MINIMSG_SOCKET_STATE_SEND;
+	else if(type == MINIMSG_RECV_ONLY)s->state = MINIMSG_SOCKET_STATE_RECV;
 	else{
 		//TODO
 		handle_error("not implemented\n");
@@ -1261,6 +1260,8 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
 	minimsg_context_t* ctx;
 	msg_t* m;
 	dbg("addr = %p\n",s);
+	if(s->type != MINIMSG_REQ && s->type != MINIMSG_SEND_ONLY) handle_error("socket's type can't be used to do connect\n"); 
+
 	m = msg_alloc();
 	if(!m) return MINIMSG_FAIL;
 	s->isClient = 1;
@@ -1361,6 +1362,8 @@ int minimsg_bind(minimsg_socket_t* s, unsigned port)
 	minimsg_context_t* ctx = s->ctx;
 	struct sockaddr_in sin;
 	
+	/* check if socket type is able to bind */
+	if(s->type != MINIMSG_REP && s->type != MINIMSG_RECV_ONLY) handle_error("socket's type can't be used to do bind\n"); 
 	s->isClient = 0;
     s->listener = socket(AF_INET, SOCK_STREAM, 0);
     if(s->listener == -1){
@@ -1467,28 +1470,22 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
     if(check_recv_state(ss) == MINIMSG_FAIL){
 			handle_error("fail to pass check_recv_state\n");
 	}
-	if(ss->isClient){
-		while(1){
-			pthread_spin_lock(&ss->lock);
-			m = queue_pop(ss->control_q);
-			pthread_spin_unlock(&ss->lock);
-			if(m == NULL)break;
-			dbg("process control message\n");
-			str = msg_content_at_frame(m,0);
-			if(!strcmp(str,"disconnect")){
-				dbg("the network is closed\n");
-				msg_free(m);
-				return NULL;
-			}
-			msg_free(m);
-		}
-	}
+	
 	dbg("pass check_recv_state\n");
 	dbg("waiting for reading ... \n");
 	s = read(ss->recv_efd, &ur, sizeof(uint64_t));
+	dbg("got (%u/%lu)\n",s,ur);
     if (s != sizeof(uint64_t)){
 		dbg("read error\n");
 		return NULL;
+	}
+	/* check if there is control message */
+	/* no data message would follow control message */
+	if(ss->isClient){
+		if(ur >= ONE_CONTROL_MESSAGE){
+			dbg("disconnect\n");
+			return NULL;
+		}
 	}
 	dbg("got %lu message\n",ur);
 	if(ur > 1){
@@ -1503,7 +1500,7 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 	
 	pthread_spin_lock(&ss->lock);
 		qd = (queue_data_t*) queue_pop( ss->recv_q);
-		if(ss->type != MINIMSG_PULL &&  ss->isClient == 0){
+		if(ss->type != MINIMSG_RECV_ONLY &&  ss->isClient == 0){
 			ss->current = qd->fds;
 			ss->current->refcnt++;
 		}

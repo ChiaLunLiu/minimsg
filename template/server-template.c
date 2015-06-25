@@ -25,7 +25,7 @@ int main()
 	m = minimsg_recv(socket);
 	printf("server receives message\n");
 	msg_print(m);
-	
+	sleep(100);
 	msg_free(m);
 	printf("server sends message back\n");
 	m = msg_alloc();
