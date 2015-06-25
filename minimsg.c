@@ -734,9 +734,10 @@ static void free_network_rw_event(fd_state_t *state)
 	minimsg_socket_t* ss;
 	uint64_t uw ;
 	ssize_t s;
+	dbg("\n");
 	ss = state->minimsg_socket;
 	
-	if(ss->isClient && state->send_state !=-1){
+	if(ss->type != MINIMSG_SEND_ONLY && ss->isClient && state->send_state !=-1){
 		uw = ONE_CONTROL_MESSAGE;
 		/* write is thread safe */
 		s = write(ss->recv_efd, &uw, sizeof(uint64_t));
@@ -1474,7 +1475,6 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 	dbg("pass check_recv_state\n");
 	dbg("waiting for reading ... \n");
 	s = read(ss->recv_efd, &ur, sizeof(uint64_t));
-	dbg("got (%u/%lu)\n",s,ur);
     if (s != sizeof(uint64_t)){
 		dbg("read error\n");
 		return NULL;
@@ -1497,17 +1497,19 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 		}
 	}
 	
-	
 	pthread_spin_lock(&ss->lock);
 		qd = (queue_data_t*) queue_pop( ss->recv_q);
 		if(ss->type != MINIMSG_RECV_ONLY &&  ss->isClient == 0){
 			ss->current = qd->fds;
 			ss->current->refcnt++;
+			dbg("add reference count\n");
 		}
 	pthread_spin_unlock(&ss->lock);
 	/* leave queue */
-	if(ss->isClient == 0) free_fd_state(ss->current); 
-	
+	if(ss->isClient == 0){
+		dbg("free fd_state\n");
+		free_fd_state(qd->fds); 
+	}
 	update_socket_state(ss);
 	m = qd->msg;
 	free(qd);
@@ -1518,6 +1520,8 @@ static int check_send_state(const minimsg_socket_t* s)
 	if(s->type == MINIMSG_REP || s->type == MINIMSG_REQ){
 		if(s->state == MINIMSG_SOCKET_STATE_SEND ) return MINIMSG_OK;
 	}
+	else if(s->type == MINIMSG_RECV_ONLY)return MINIMSG_FAIL;
+	else if(s->type == MINIMSG_SEND_ONLY)return MINIMSG_OK;
 	return MINIMSG_FAIL;
 }
 
@@ -1526,6 +1530,8 @@ static int check_recv_state(const minimsg_socket_t* s)
 	if(s->type == MINIMSG_REP || s->type == MINIMSG_REQ){
 		if(s->state == MINIMSG_SOCKET_STATE_RECV ) return MINIMSG_OK;
 	}
+	else if(s->type == MINIMSG_SEND_ONLY)return MINIMSG_FAIL;
+	else if(s->type == MINIMSG_RECV_ONLY)return MINIMSG_OK;
 	return MINIMSG_FAIL;
 }
 static void update_socket_state(minimsg_socket_t* s)
@@ -1535,6 +1541,12 @@ static void update_socket_state(minimsg_socket_t* s)
 				s->state = MINIMSG_SOCKET_STATE_SEND;
 			else if(s->state == MINIMSG_SOCKET_STATE_SEND)
 				s->state = MINIMSG_SOCKET_STATE_RECV;
+	}
+	else if( s->type ==MINIMSG_SEND_ONLY){
+		/* NOTHING TO DO */
+	}
+	else if( s->type ==MINIMSG_RECV_ONLY){
+		/* NOTHING TO DO */
 	}
 	else{
 		//TODO
