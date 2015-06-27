@@ -1123,15 +1123,14 @@ static void timeout_handler(int fd, short event, void *arg)
 		return;
 	}
 	
-	pthread_spin_lock(&ctx->lock);
-		tmp = ctx->connecting_list;
-		ctx->connecting_list = list;
-		list = tmp;
-	pthread_spin_unlock(&ctx->lock);
+	tmp = ctx->connecting_list;
+	ctx->connecting_list = list;
+	list = tmp;
 	while(1){
 		it = list_lpop(list);
 		if(it == NULL) break;
 		ss = (minimsg_socket_t*)it->val;	
+		free(it);
 		if(_minimsg_connect(ss) == MINIMSG_FAIL){
 			dbg("connect still fails\n");
 		}
@@ -1289,7 +1288,7 @@ static int _minimsg_connect(minimsg_socket_t* ss)
 	int num;
 	minimsg_context_t* ctx = ss->ctx;
 	struct sockaddr_in server = ss->server;
-	
+	list_node_t * ln;
 	dbg("\n");
 	if(server.sin_family == AF_INET){
 			sock = socket(AF_INET,SOCK_STREAM,0);
@@ -1304,10 +1303,9 @@ static int _minimsg_connect(minimsg_socket_t* ss)
         	if (connect(sock,(struct sockaddr*)&ss->server,sizeof(ss->server))<0){
 				/* add it to connecting pool */
 					close(sock);
-					
-					pthread_spin_lock(&ctx->lock);
-						list_rpush(ctx->connecting_list,ss->ln);
-					pthread_spin_unlock(&ctx->lock);
+					ln = list_node_new(ss);
+					if(!ln) handle_error("list_node_new fails\n");
+					list_rpush(ctx->connecting_list,ln);
 					
 					dbg("connect fails\n");
 					return MINIMSG_FAIL;
@@ -1642,20 +1640,19 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	dbg("destroy fd_list\n");
 	list_destroy(s->fd_list);
 		
-	pthread_spin_lock(&ctx->lock);
-		/* remove from connecting list */
-		dbg("try to remove socket from connecting list if it is there\n");
-		it = list_iterator_new(ctx->connecting_list, LIST_HEAD);
-		while( ln = list_iterator_next(it)){
-			ss = (minimsg_socket_t*) ln->val;
-			if( ss == s){
-				dbg("remove minimsg socket from connecting list\n");
-				list_remove(ctx->connecting_list,ln);
-				break;
-			}
+	/* remove from connecting list */
+	dbg("try to remove socket from connecting list if it is there\n");
+	it = list_iterator_new(ctx->connecting_list, LIST_HEAD);
+	while( ln = list_iterator_next(it)){
+		dbg("element in connecting list\n");
+		ss = (minimsg_socket_t*) ln->val;
+		if( ss == s){
+			dbg("remove minimsg socket from connecting list\n");
+			list_remove(ctx->connecting_list,ln);
+			break;
 		}
-		list_iterator_destroy(it);
-	pthread_spin_unlock(&ctx->lock);
+	}
+	list_iterator_destroy(it);
 	
 	dbg("free msg in pending_send_q\n");
 		while( m = queue_pop(s->pending_send_q)){
