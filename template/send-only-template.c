@@ -7,11 +7,7 @@ int main(int argc , char** argv)
 	minimsg_context_t* ctx;
 	minimsg_socket_t* socket;
 	msg_t * m;
-	struct sockaddr_in server;
 	int i;
-	server.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server.sin_family = AF_INET;
-    server.sin_port = htons(12345);
 	ctx = minimsg_create_context();
 	if(!ctx){
 		fprintf(stderr,"fail to create minimsg context\n");
@@ -21,7 +17,7 @@ int main(int argc , char** argv)
 	socket = minimsg_create_socket(ctx,MINIMSG_SEND_ONLY);
 	printf("socket is created\n");
 
-	if(minimsg_connect(socket,server) == MINIMSG_OK){
+	if(minimsg_connect(socket,"local:///home/bendog/git/minimsg/template/local") == MINIMSG_OK){
 		printf("connected\n");
 	}
 	else{

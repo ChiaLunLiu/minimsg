@@ -164,6 +164,7 @@ struct _minimsg_socket{
 								* When it does minimsg_bind, it is server
 								* 1: client ; 0: server
 								*/
+	char* conn_path;                                    /* address to connect */
 	struct _minimsg_context* ctx;
 	fd_state_t* current; /* currently processing session
 						  * when isClient = 1, it is always the same session
@@ -174,7 +175,6 @@ struct _minimsg_socket{
 	list_t* fd_list;
 	/* client */
 	int connection_state;      /* 0: not connected yet ; 1: connecting ; 2 : connected */ 
-	struct sockaddr_in server; /* server address */
 	queue_t* control_q;        /* control_q and control_efd receives control message 
 								* from network I/O thread 
 								* for example, the network is closed 
@@ -259,8 +259,12 @@ int add_msg_clients(msg_client_t* c,int type,const char* location, int port,int 
 int connect_msg_clients(msg_client_t* c);
 void msg_client_send(msg_client_t* clients, const char* server_location,msg_t* m);
 
-
-int minimsg_connect(minimsg_socket_t* s,struct sockaddr_in server);
+/* ----------------------
+ * minimsg API
+ * ---------------------- 
+ */
+int minimsg_connect(minimsg_socket_t* s,const char* conn_path);
+int minimsg_bind(minimsg_socket_t* s,const char* conn_path);
 msg_t* minimsg_recv(minimsg_socket_t* s);
 /*
  *  minimsg_send
@@ -269,18 +273,10 @@ msg_t* minimsg_recv(minimsg_socket_t* s);
 int minimsg_send(minimsg_socket_t* s, msg_t* m);
 minimsg_context_t* minimsg_create_context();
 int minimsg_free_context(minimsg_context_t* ctx);
-/*
- *  minimsg_free_socket
- */
+
 minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int minimsg_socket_type);
 int minimsg_free_socket(minimsg_socket_t* s);
- 
-/*
-int minimsg_connect(minimsg_context_t* ctx,minimsg_socket_t* s, int minimsg_type,const char* ip, unsigned port);
-int minimsg_bind(minimsg_context_t* ctx,minimsg_socket_t* s, unsigned port);
+int minimsg_socket_recv_fd(const minimsg_socket_t* s);
 
-
-int minimsg_send(minimsg_context_t* ctx, int fd,msg_t* m);
-*/
  
 #endif

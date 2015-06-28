@@ -14,7 +14,7 @@ int main()
 	
 	socket = minimsg_create_socket(ctx,MINIMSG_RECV_ONLY);
 	fprintf(stderr,"socket is created\n");
-	if(minimsg_bind(socket,12345) == MINIMSG_FAIL){
+	if(minimsg_bind(socket,"local:///home/bendog/git/minimsg/template/local") == MINIMSG_FAIL){
 		fprintf(stderr,"bind fails\n");
 		return 0;
 	}

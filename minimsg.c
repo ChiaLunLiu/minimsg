@@ -10,12 +10,10 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <errno.h>
-/* For sockaddr_in */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-/* For socket functions */
 #include <sys/socket.h>
-/* For fcntl */
+#include<sys/un.h>
 #include <fcntl.h>
 
 #include <event2/event.h>
@@ -1228,6 +1226,7 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	s->type = type;
 	s->ctx = ctx;
 	s->isClient = 0;
+	s->conn_path = NULL;
 	s->listener_event = NULL;
 	s->connection_state = 0;
 	s->current = NULL;
@@ -1255,7 +1254,7 @@ minimsg_socket_t* minimsg_create_socket(minimsg_context_t* ctx,int type)
 	return s;
 }
 
-int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
+int minimsg_connect(minimsg_socket_t* s,const char* conn_path)
 {
 	minimsg_context_t* ctx;
 	msg_t* m;
@@ -1264,9 +1263,9 @@ int minimsg_connect(minimsg_socket_t* s, struct sockaddr_in server)
 
 	m = msg_alloc();
 	if(!m) return MINIMSG_FAIL;
+	if(! (s->conn_path = strdup(conn_path)) ) return MINIMSG_FAIL;
 	s->isClient = 1;
 	s->connection_state = 1;
-	s->server = server; 
 	ctx = s->ctx;
 	msg_append_string(m,"connect");
 	msg_append_string_f(m,"%p",s);
@@ -1287,109 +1286,172 @@ static int _minimsg_connect(minimsg_socket_t* ss)
 	msg_t* m;
 	int num;
 	minimsg_context_t* ctx = ss->ctx;
-	struct sockaddr_in server = ss->server;
+	struct sockaddr_in remote;
+	struct sockaddr_un local;
+	struct sockaddr*  addr;
+	socklen_t sock_len;
+	char* conn_path;
 	list_node_t * ln;
+	char* port;
 	dbg("\n");
-	if(server.sin_family == AF_INET){
-			sock = socket(AF_INET,SOCK_STREAM,0);
-        	if(sock == -1)
+	conn_path = strdup(ss->conn_path);
+	if(!conn_path){
+		dbg("strdup fails\n");	
+		return MINIMSG_FAIL;
+	}
+	/* parse conn_path */
+	if(!strncmp(conn_path,"local://",8)){	
+		addr = (struct sockaddr*)&local;
+		memset(&local,0,sizeof(local));
+        	local.sun_family = AF_LOCAL;
+        	strncpy(local.sun_path,conn_path + 8,sizeof(local.sun_path));
+        	local.sun_path[ sizeof(local.sun_path)-1]='\0';
+        	sock_len = SUN_LEN(&local);	
+		sock = socket(AF_LOCAL,SOCK_STREAM,0);
+        	if(sock < 0)
         	{
-        	        perror("could not create socket");
+			dbg("fail to create socket\n");
         	        return MINIMSG_FAIL;
         	}
-        	puts("Socket created");
-			ss->server = server;
-			//TODO, add it to event
-        	if (connect(sock,(struct sockaddr*)&ss->server,sizeof(ss->server))<0){
-				/* add it to connecting pool */
-					close(sock);
-					ln = list_node_new(ss);
-					if(!ln) handle_error("list_node_new fails\n");
-					list_rpush(ctx->connecting_list,ln);
-					
-					dbg("connect fails\n");
-					return MINIMSG_FAIL;
+	}
+	else if(!strncmp(conn_path,"remote://",9)){
+		addr = (struct sockaddr*)&remote;
+		port = strrchr(conn_path,':');
+		*port = '\0';
+		port++;
+        	remote.sin_addr.s_addr = inet_addr(conn_path+9);
+    		remote.sin_family = AF_INET;
+    		remote.sin_port = htons( atoi( port) );		
+
+		sock_len = sizeof( remote);
+		sock = socket(AF_INET,SOCK_STREAM,0);
+        	if(sock == -1)
+        	{
+			dbg("fail to create socket\n");
+        	        return MINIMSG_FAIL;
         	}
-        	dbg("connect succeeds\n");
-        	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-			evutil_make_socket_nonblocking(sock);
-			state = alloc_fd_state(ss, sock);
-			ss->current= state;
-			pthread_spin_lock(&ss->lock);
-			ss->connection_state = 2;
-			pthread_spin_unlock(&ss->lock);
-			/* reference count for client  */
-			state->refcnt++;
-			assert(state); /*XXX err*/
-			assert(state->write_event);
-			event_add(state->read_event, NULL);
-			
-			/* add all msg in pending_q to data_q */
-			dbg("connect succeeds not in first time\n");
-			/* no one would operate pending_send_q at this moment  so no lock */
-			num = queue_size(ss->pending_send_q);
-			dbg("there are %d pending messages to be sent\n",num);
-			while( m = queue_pop(ss->pending_send_q) ){	
-				qd = (queue_data_t*) malloc( sizeof( queue_data_t) );
-				if(!qd) handle_error("malloc fails\n");
-				if( ss->isClient == 0) handle_error("socket is not client \n");
-				if( ss->current == NULL) handle_error("ss->current is NULL\n");
-				qd->fds = ss->current;
-				qd->msg = m;
-				pthread_spin_lock(&ctx->lock);
-					queue_push( ctx->data_q,qd);
-				pthread_spin_unlock(&ctx->lock);
-			}
-			
-			if(num > 0){
-				uw = num;
-				/* write is thread safe */
-				s = write(ctx->data_efd, &uw, sizeof(uint64_t));
-				if (s != sizeof(uint64_t)) handle_error("write");
-			}
-			
-			
-			return MINIMSG_OK;
 	}
-	else{
-		//TODO
-		handle_error("not implemented\n");
+	free(conn_path);
+        dbg("Socket created");
+        if (connect(sock,addr,sock_len)<0){
+		/* add it to connecting pool */
+		close(sock);
+		ln = list_node_new(ss);
+		if(!ln) handle_error("list_node_new fails\n");
+		list_rpush(ctx->connecting_list,ln);	
+		dbg("connect fails\n");
+		return MINIMSG_FAIL;
+        }
+      	dbg("connect succeeds\n");
+       	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	evutil_make_socket_nonblocking(sock);
+	state = alloc_fd_state(ss, sock);
+	ss->current= state;
+	pthread_spin_lock(&ss->lock);
+	ss->connection_state = 2;
+	pthread_spin_unlock(&ss->lock);
+	/* reference count for client  */
+	state->refcnt++;
+	assert(state); /*XXX err*/
+	assert(state->write_event);
+	event_add(state->read_event, NULL);
+	
+	/* add all msg in pending_q to data_q */
+	dbg("connect succeeds not in first time\n");
+	/* no one would operate pending_send_q at this moment  so no lock */
+	num = queue_size(ss->pending_send_q);
+	dbg("there are %d pending messages to be sent\n",num);
+	while( m = queue_pop(ss->pending_send_q) ){	
+		qd = (queue_data_t*) malloc( sizeof( queue_data_t) );
+		if(!qd) handle_error("malloc fails\n");
+		if( ss->isClient == 0) handle_error("socket is not client \n");
+		if( ss->current == NULL) handle_error("ss->current is NULL\n");
+		qd->fds = ss->current;
+		qd->msg = m;
+		pthread_spin_lock(&ctx->lock);
+		queue_push( ctx->data_q,qd);
+		pthread_spin_unlock(&ctx->lock);
 	}
+			
+	if(num > 0){
+		uw = num;
+		/* write is thread safe */
+		s = write(ctx->data_efd, &uw, sizeof(uint64_t));
+		if (s != sizeof(uint64_t)) handle_error("write");
+	}			
+	return MINIMSG_OK;
 }
-int minimsg_bind(minimsg_socket_t* s, unsigned port)
+int minimsg_bind(minimsg_socket_t* s,const char* conn_path)
 {
 	minimsg_context_t* ctx = s->ctx;
-	struct sockaddr_in sin;
-	
+	struct sockaddr_in remote;
+	struct sockaddr_un local;
+	struct sockaddr* addr;
+	socklen_t sock_len;
+	char* port;
+	int sock;
+	char* path;
 	/* check if socket type is able to bind */
 	if(s->type != MINIMSG_REP && s->type != MINIMSG_RECV_ONLY) handle_error("socket's type can't be used to do bind\n"); 
 	s->isClient = 0;
-    s->listener = socket(AF_INET, SOCK_STREAM, 0);
-    if(s->listener == -1){
-       perror("could not create socket");
-       return MINIMSG_FAIL;
-    }
     
-    evutil_make_socket_nonblocking(s->listener);
-    sin.sin_family = AF_INET;
-    sin.sin_addr.s_addr = 0;
-    sin.sin_port = htons(port);
+	path = strdup(conn_path);
+	if(!path){
+		dbg("strdup fails\n");
+		return MINIMSG_FAIL;
+	}
+	/* parse conn_path */
+    	if(!strncmp(path,"local://",8)){
+                addr = (struct sockaddr*)&local;
+                memset(&local,0,sizeof(local));
+                local.sun_family = AF_LOCAL;
+                strncpy(local.sun_path,path + 8,sizeof(local.sun_path));
+                local.sun_path[ sizeof(local.sun_path)-1]='\0';
+                sock_len = SUN_LEN(&local);
+		sock = socket(AF_LOCAL,SOCK_STREAM,0);
+                if(sock < 0)
+                {
+                        dbg("fail to create socket\n");
+                        return MINIMSG_FAIL;
+                }
+		unlink(path + 8);
+    	}
+    	else if(!strncmp(path,"remote://",9)){
+                addr = (struct sockaddr*)&remote;
+                port = strrchr(path,':');
+                *port = '\0';
+                port++;
+                remote.sin_addr.s_addr = inet_addr(path+9);
+                remote.sin_family = AF_INET;
+                remote.sin_port = htons( atoi( port) );
 
-    int one = 1;
-    setsockopt(s->listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+                sock_len = sizeof( remote);
+		sock = socket(AF_INET,SOCK_STREAM,0);
+                if(sock < 0)
+                {
+                        dbg("fail to create socket\n");
+                        return MINIMSG_FAIL;
+                }
 
-    if (bind(s->listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
-        perror("bind");
-        return MINIMSG_FAIL;
-    }
+    	}
+	free(path);
+	s->listener = sock;
+    	evutil_make_socket_nonblocking(s->listener);
+    	int one = 1;
+    	setsockopt(s->listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
-    if (listen(s->listener, 16)<0) {
-        perror("listen");
-        return MINIMSG_FAIL;
-    }
-    s->listener_event = event_new(ctx->base, s->listener, EV_READ|EV_PERSIST, do_accept, (void*)s );
-    event_add(s->listener_event,NULL);
-    return MINIMSG_OK;
+    	if (bind(s->listener,addr, sock_len) < 0) {
+    	    perror("bind");
+    	    return MINIMSG_FAIL;
+    	}
+
+    	if (listen(s->listener, 16)<0) {
+    	    perror("listen");
+    	    return MINIMSG_FAIL;
+    	}
+    	s->listener_event = event_new(ctx->base, s->listener, EV_READ|EV_PERSIST, do_accept, (void*)s );
+    	event_add(s->listener_event,NULL);
+    	return MINIMSG_OK;
 }
 int minimsg_send(minimsg_socket_t* ss, msg_t* m)
 {
@@ -1691,7 +1753,10 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 		dbg("event_free listener event\n");
 		event_free(s->listener_event);
 	}
+	if(s->conn_path) free(s->conn_path);
+	if(s->listener > -1) close(s->listener);
 	free(s);
+
 }
 /*
  *  minimsg_free_context
@@ -1850,4 +1915,9 @@ static void data_handler(evutil_socket_t fd, short events, void *arg)
 		}
 		free(qdata);
     }	
+}
+
+inline int minimsg_socket_recv_fd(const minimsg_socket_t* s)
+{
+	return s->recv_efd;
 }
