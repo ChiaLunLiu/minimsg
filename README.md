@@ -1,30 +1,27 @@
 # minimsg
 
-TCP is a streaming protocol. Thus, users have to define their own delimiter to tell the data boundary.
+minimsg is a network library that helps to transmit data over TCP
 
-minimsg uses prefix length to locate data in TCP. 
+TCP is streaming, minimsg does prefix-length to locate data TCP.
 
-  In minimsg, the sending and receiving unit is message
+minimsg provides some basic socket model
 
-A message consists of frame(s). If you have key/value pair to send,
+1. REQ
+2. REP
+3. SEND_ONLY
+4. RECV_ONLY
 
-you can write key to first frame and value to second frame, and you don't
+REQ transmit data in the order of {send,recv}*
+REP transmit data in the order of {recv,send}*
+SEND_ONLY only send
+RECV_ONLY only recv
 
-have to worry about how to distinguish their boundary.
 
-  minimsg provides template server and client in directory template.
+minimsg creates another thread to do network data transmission in nonblocking way.
 
-The server handles all the network I/O in nonblocking way and it is built
+the directory template in minimsg source code is good starting point for users to
 
-based on libevent to do multiplexing. The server comes with a thread pool.
-
-Each thread in the thread pool has a message queue. To do load balance, the receiving message is
-
-scheduled to send to thread with the least queue size. The server API provides
-
-a callback for users to handle the message. This callback is shared by all threads.
-
- To run programs using minimsg, users can first run template server then template client.
+understand how to uses the API in a quick way
 
 
 Platform: Linux 
@@ -39,4 +36,4 @@ Note:
 
 The programs in template directory has been examined by valgrind memcheck and it shows no
 
-memory leak
+memory leak in my test.
