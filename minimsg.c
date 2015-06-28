@@ -741,19 +741,18 @@ static void free_network_rw_event(fd_state_t *state)
 		s = write(ss->recv_efd, &uw, sizeof(uint64_t));
 		if (s != sizeof(uint64_t)) handle_error("write");
 	}
-	if(ss->isClient){
-		dbg("close recv_efd for client\n");
-		close(ss->recv_efd);
-	}
-    if(state->read_event){
+    	if(state->read_event){
+		dbg("free read_event\n");
 		event_free(state->read_event);
 		state->read_event = NULL;
 	}
 
-    if(state->write_event){
+    	if(state->write_event){
+		dbg("free write_event\n");
 		event_free(state->write_event);
 		state->write_event = NULL;
-    }
+    	}
+	dbg("end\n");
 	state->send_state = state->recv_state = -1;
 }
 
@@ -772,12 +771,13 @@ static int free_fd_state(fd_state_t *state)
     queue_t* tmp;
     minimsg_socket_t* ss = state->minimsg_socket;
     pthread_spin_lock(&ss->lock);
-		state->refcnt--;
-		refcnt = state->refcnt;
+	state->refcnt--;
+	refcnt = state->refcnt;
     pthread_spin_unlock(&ss->lock);
+ 
+   dbg("refcnt: %d\n",refcnt);
     
     if(refcnt == 0){
-		 dbg("\n");
 	free_network_rw_event(state);
 	
 	
@@ -789,17 +789,18 @@ static int free_fd_state(fd_state_t *state)
 		frame_free(state->send_frame);
 		state->send_frame = NULL;
 	}
-    while(  m = queue_pop(state->send_q) ){
-        msg_free(m);
-    }
+    	while(  m = queue_pop(state->send_q) ){
+        	msg_free(m);
+    	}
    
 	close(state->sock);
-    ringbuffer_destroy(state->rb_recv);
-    ringbuffer_destroy(state->rb_send);
-    queue_free(state->send_q);
-    pthread_spin_destroy(&state->lock);
-    free(state);
-	}
+    	ringbuffer_destroy(state->rb_recv);
+    	ringbuffer_destroy(state->rb_send);
+    	queue_free(state->send_q);
+    	pthread_spin_destroy(&state->lock);
+	list_remove(ss->fd_list,state->ln);
+    	free(state);
+    }
     return refcnt;
 }
 
@@ -857,9 +858,7 @@ static fd_state_t * alloc_fd_state(minimsg_socket_t* ss, evutil_socket_t fd)
 	state->ln = list_node_new(state);
 	if(!state->ln) handle_error("fail to alloc list_node_new\n");
 
-	pthread_spin_lock(&ss->lock);
-		list_rpush(ss->fd_list,state->ln);	
-	pthread_spin_unlock(&ss->lock);
+	list_rpush(ss->fd_list,state->ln);	
 	
     return state;
 }
@@ -1150,7 +1149,7 @@ minimsg_context_t* minimsg_create_context()
 	int s;
 	minimsg_context_t * ctx = NULL;
 	struct event* timer_event = NULL;
-	struct event* data_event = NULL, *control_event = NULL,* sigusr1_event = NULL;
+	struct event* data_event = NULL, *control_event = NULL;
 	void* base = NULL;
 	queue_t * data_q = NULL,* control_q = NULL;
 	int data_efd = -1, control_efd = -1;
@@ -1168,8 +1167,7 @@ minimsg_context_t* minimsg_create_context()
 	data_event=event_new(base, data_efd, EV_READ|EV_PERSIST, data_handler, (void*)ctx );
 	control_event=event_new(base, control_efd, EV_READ|EV_PERSIST, control_handler, (void*)ctx );
 	timer_event = event_new(base,-1, EV_TIMEOUT |EV_PERSIST,timeout_handler,(void*)ctx);
-	sigusr1_event = evsignal_new(base,SIGUSR1,sigusr1_handler,(void*)ctx);
-	if(!data_event || !control_event || !timer_event || !sigusr1_event) goto error;
+	if(!data_event || !control_event || !timer_event) goto error;
 	   
     data_q = queue_alloc();
     control_q = queue_alloc();
@@ -1181,7 +1179,7 @@ minimsg_context_t* minimsg_create_context()
 	if(!connecting_list || !sk_list) goto error;
 	
 	if(event_add(timer_event,&tv)== -1 || event_add(data_event, NULL) == -1 || 
-	event_add(control_event, NULL) == -1 || event_add(sigusr1_event, NULL) == -1)goto error;
+	event_add(control_event, NULL) == -1 )goto error;
 
 	ctx->base = base;
 	ctx->data_q = data_q;
@@ -1193,7 +1191,6 @@ minimsg_context_t* minimsg_create_context()
 	ctx->timeout_event = timer_event;
 	ctx->data_event = data_event;
 	ctx->control_event = control_event;
-	ctx->sigusr1_event = sigusr1_event;
 	
 	if(pthread_spin_init(&ctx->lock,0)!=0) goto error;
 	s = pthread_create(&ctx->thread,NULL,thread_handler,(void*)ctx);
@@ -1534,9 +1531,15 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 	
 	dbg("pass check_recv_state\n");
 	dbg("waiting for reading ... \n");
+again:
 	s = read(ss->recv_efd, &ur, sizeof(uint64_t));
     if (s != sizeof(uint64_t)){
+
 		dbg("read error\n");
+		if(s == -1 && errno == EINTR){
+			dbg("signal caught while reading\n");
+			goto again;
+		}
 		return NULL;
 	}
 	/* check if there is control message */
@@ -1550,8 +1553,13 @@ msg_t* minimsg_recv(minimsg_socket_t* ss)
 	dbg("got %lu message\n",ur);
 	if(ur > 1){
 		ur--;
+again2:
 		s = write(ss->recv_efd,&ur,sizeof(uint64_t));
 		if (s != sizeof(uint64_t)){
+			if(s == -1 && errno == EINTR){
+				dbg("signal caught while writing\n");
+				goto again2;
+			}
 			dbg("write error\n");
 			return NULL;
 		}
@@ -1694,11 +1702,17 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	ctx = s->ctx;
 		/* remove from fd_list */
 	dbg("remove all fd in fd_list\n");
-	while( ln = list_lpop(s->fd_list)){
-		dbg("free fd state: %p\n",(void*)ln->val);
-		free_fd_state( (fd_state_t*) ln->val);
-		free(ln);
-	}
+	it = list_iterator_new(s->fd_list, LIST_HEAD);
+	prev = list_iterator_next(it);
+	while(prev){
+		ln = list_iterator_next(it);
+		dbg("free fd state: %p\n",(void*)prev->val);
+		/* no need to free list_node_t because free_fd_state does it */
+		free_fd_state( (fd_state_t*) prev->val);
+		prev = ln;
+	}	
+	list_iterator_destroy(it);
+	
 	dbg("destroy fd_list\n");
 	list_destroy(s->fd_list);
 		
@@ -1809,7 +1823,6 @@ int minimsg_free_context(minimsg_context_t* ctx)
 		msg_free(m);
 	}
 	queue_free(ctx->control_q);
-	event_free(ctx->sigusr1_event);
 	event_base_free(ctx->base);
 	free(ctx);
 }

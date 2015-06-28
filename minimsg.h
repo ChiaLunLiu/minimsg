@@ -140,6 +140,7 @@ struct _msg_server{
 	void*(*cb)(void*);  /* thread task's function */
 	int (*task_scheduler)(const void*); /* schedule task based on message content */
 	void* base;
+	
 };
 
 
@@ -187,7 +188,6 @@ struct _minimsg_socket{
 typedef struct _minimsg_context{
 	void * base;
 	pthread_t thread;            /* network I/O thread */
-	struct event*  sigusr1_event;
 	/* the following 3 variables builds event that sends control message to network I/O thread */
 	queue_t* control_q;
 	int control_efd;  
