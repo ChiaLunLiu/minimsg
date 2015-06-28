@@ -1,7 +1,7 @@
 /*
  *	This program acts as server
- *	It uses MINIMSG_RECV_ONLY socket type
- *	socket of type MINIMSG_RECV_ONLY only recevies data represented in msg_t
+ *	It uses MINIMSG_REP socket type
+ *	socket of type MINIMSG_REP only communicates data in the order of {recv,send}* 
  *	The program can be terminated normally by sending SIGINT ( ctrl+c ). 
  *	Date: 2015/06/28
  */
@@ -47,7 +47,7 @@ int main()
 		return 0;
 	}
 	
-	socket = minimsg_create_socket(ctx,MINIMSG_RECV_ONLY);
+	socket = minimsg_create_socket(ctx,MINIMSG_REP);
 	fprintf(stderr,"socket is created\n");
 	if(minimsg_bind(socket,"remote://127.0.0.1:12345") == MINIMSG_FAIL){
 //	if(minimsg_bind(socket,"local:///home/bendog/git/minimsg/template/local") == MINIMSG_FAIL){
@@ -78,17 +78,27 @@ int main()
 /* start */		
 	while(1){
 		n = epoll_wait(efd,events,MAX_EVENTS,-1);
+		printf("got new events: %d\n",n);
 		if(n == -1){
 			printf("epoll_wait error\n");
 			goto end;
 		}
-		printf("got new events: %d\n",n);
 		for(i = 0 ;i<n; i++){
                         if( minimsg_socket_recv_fd(socket) == events[i].data.fd){
 				m = minimsg_recv(socket);
 				printf("server receives message\n");
 				msg_print(m);
+				/* process here */
 				msg_free(m);
+				/* send result back */
+				m = msg_alloc();
+				msg_append_string(m,"my result");
+				if(!m) handle_error("msg_alloc fails\n");
+				/* minimsg_send does not block, so it's ok to directly call it */
+				if ( minimsg_send(socket,m) == MINIMSG_FAIL){
+					printf("minimsg_send fails\n");
+					goto end;
+				}
 			}
 			else if(sfd == events[i].data.fd){
 				s = read(sfd,&fdsi,sizeof(struct signalfd_siginfo));

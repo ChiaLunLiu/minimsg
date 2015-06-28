@@ -1,7 +1,6 @@
 #include "minimsg.h"
 #include "queue.h"
 #include "ringbuffer.h"
-#include "thread_pool.h"
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -24,11 +23,6 @@
 #include <errno.h>
 #define TIMEOUT_SECONDS 3
 #define ONE_CONTROL_MESSAGE ( 1ULL << 31)
-typedef struct _server_thread_data{
-	void* msg;
-	fd_state_t* fds;
-	minimsg_socket_t* server;
-}server_thread_data_t;
 
 typedef struct _queue_data{
 	msg_t* msg;
@@ -36,14 +30,12 @@ typedef struct _queue_data{
 }queue_data_t;
 
 
-static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short events, void *arg);
 static fd_state_t * alloc_fd_state(minimsg_socket_t* server, evutil_socket_t fd);
 static int free_fd_state(fd_state_t *state);
 
 static void free_network_rw_event(fd_state_t *state);
 static void msg_recv_nb(evutil_socket_t fd, short events, void *arg);
 static void msg_send_nb(evutil_socket_t fd, short events, void *arg);
-static void* msg_server_thread_task_wrapper(void* arg);
 
 static int check_recv_state(const minimsg_socket_t* s);
 static int check_send_state(const minimsg_socket_t* s);
@@ -58,12 +50,12 @@ static void send_control_message(minimsg_context_t* ctx, msg_t* m);
 static void kill_thread(minimsg_context_t* ctx);
 
 static void control_handler(evutil_socket_t fd, short events, void *arg);
-static void sigusr1_handler(evutil_socket_t fd, short event, void *arg);
 
 
 static void _minimsg_free_socket(minimsg_socket_t* s);
 static int _minimsg_connect(minimsg_socket_t* s);
 static void data_handler(evutil_socket_t fd, short events, void *arg);
+static void do_accept(evutil_socket_t listener, short event, void *arg);
 
 
 static void* thread_handler(void* arg);
@@ -617,7 +609,7 @@ recv_frame_content:
 				if(fds->recv_number_of_frame == 0){
 					/* a complete message is received */
 					fds->recv_state = MINIMSG_STATE_RECV_NUMBER_OF_FRAME;
-					qdata = malloc( sizeof( server_thread_data_t));
+					qdata = malloc( sizeof( queue_data_t));
 					if(!qdata){
 						dbg("fail to alloc\n");			
 					}
@@ -676,53 +668,6 @@ fail:
 	free_network_rw_event(fds);
 	free_fd_state(fds);
 }
-/*
-
-void
-do_read(evutil_socket_t fd, short events, void *arg)
-{
-    fd_state_t *state = (fd_state_t*)arg;
-    char buf[MINIMSG_MSGSERVER_BUFFER_SIZE];
-    int i;
-    ssize_t result;
-  //  printf("start reading ...\n");
-    while (1) {
-        assert(state->write_event);
-        result = recv(fd, buf, sizeof(buf), 0);
-        if (result <= 0)
-            break;
-
-		state->recv_byte+=result;
-		switch(state->recv_state){
-			
-		}
-		if(state->recv_byte >= 4){
-			
-		}
-        for (i=0; i < result; ++i)  {
-	//	printf("char [ %c ]\n",buf[i]);
-            if (state->buffer_used < sizeof(state->buffer))
-                state->buffer[state->buffer_used++] = rot13_char(buf[i]);
-            if (buf[i] == '\n') {
-	//	printf("meet newline\n");
-                assert(state->write_event);
-		state->write_upto = state->buffer_used;
-                event_add(state->write_event, NULL);
-               
-            }
-        }
-    }
-//    printf("read %d [ %d ]\n",state->buffer_used,result);
-    if (result == 0) {
-        free_fd_state(state);
-    } else if (result < 0) {
-        if (errno == EAGAIN) // XXXX use evutil macro
-            return;
-        perror("recv");
-        free_fd_state(state);
-    }
-}
-*/
 /* free_network_rw_event
  * free network event when the connection is down
  * if the socket is a client, send control msg to prevent from being blocked
@@ -792,7 +737,7 @@ static int free_fd_state(fd_state_t *state)
     	while(  m = queue_pop(state->send_q) ){
         	msg_free(m);
     	}
-   
+  
 	close(state->sock);
     	ringbuffer_destroy(state->rb_recv);
     	ringbuffer_destroy(state->rb_send);
@@ -893,207 +838,7 @@ void do_accept(evutil_socket_t listener, short event, void *arg)
 		}
     }
 }
-/* This function is called when thread sends result back */
-static void msg_server_read_result_from_thread_pool(evutil_socket_t fd, short events, void *arg)
-{
-	dbg("\n");
-	msg_server_t *m ;
-	/* read from result queue and send to network */
-	ssize_t s;
-	uint64_t u;
-	int i;
-	fd_state_t* fds;
-	server_thread_data_t* qdata;
-	m = (msg_server_t*) arg;
- 
-	s = read(fd, &u, sizeof(uint64_t));
-        if (s != sizeof(uint64_t)){
-               perror("read");
-		return;
-        }
-        for(i = 0;  i< u ; i++){
-		pthread_spin_lock(&m->thp->qlock);
-                	qdata = (server_thread_data_t*) queue_pop(m->thp->q);
-             	pthread_spin_unlock(&m->thp->qlock);
-		fds = qdata->fds;
-		free_fd_state(fds);
-		if(fds->send_state != -1){
-			dbg("message to send\n");
-		//	msg_print(qdata->msg);
-                	queue_push(fds->send_q,qdata->msg);
-               		event_add(fds->write_event, NULL);
-        	}
-		else{
-			dbg("%s: send is closed\n",__func__);
-			msg_free(qdata->msg);
-		}
-		free(qdata);
-        }	
-}
-static void* msg_server_thread_task_wrapper(void* arg)
-{
-	server_thread_data_t * d = (server_thread_data_t*)arg;
-/*
-	void* r;
-	
-	if(d->server->cb == NULL){
-		fprintf(stderr,"callback null\n");
-		return NULL;	
-	}
-	r = d->server->cb(d->msg);
-	
-	if(!r){
-		free_fd_state(d->fds);
-		free(d);
-		return NULL;
-	}
-	d->msg = r;
-	*/
-	return d;		
-}
 
-msg_server_t* create_msg_server(void* base,int port)
-{
-/*	msg_server_t* server;
-	int i;
-	struct event *listener_event;
-	struct event *thread_event;
-	struct event *sigusr1_event;
-	struct sockaddr_in sin;
-	evutil_socket_t listener;
-    listener = socket(AF_INET, SOCK_STREAM, 0);
-    evutil_make_socket_nonblocking(listener);
-    sin.sin_family = AF_INET;
-    sin.sin_addr.s_addr = 0;
-    sin.sin_port = htons(port);
-
-    int one = 1;
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-
-    if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
-        perror("bind");
-        return NULL;
-    }
-
-    if (listen(listener, 16)<0) {
-        perror("listen");
-        return NULL;
-    }
-    server = malloc( sizeof( msg_server_t ));
-    if(!server)return NULL;
-    
-    server->cb = cb; 
-    server->sock = listener;
-    server->thp = thread_pool_alloc(threads );
-    server->base = base;
-    listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)server );
-    thread_event = event_new(base, server->thp->efd, EV_READ|EV_PERSIST, msg_server_read_result_from_thread_pool, (void*)server );
-    sigusr1_event = evsignal_new(base,SIGUSR1,sigusr1_func,(void*)server);
-	*/
-    /*XXX check it */
-	/*
-    event_add(sigusr1_event,NULL);
-    event_add(listener_event, NULL);
-    event_add(thread_event, NULL);
-    server->thread_event = thread_event;
-    server->listener_event = listener_event;
-    server->sigusr1_event = sigusr1_event;
-    server->task_scheduler = task_scheduler;
-    return server;
-	*/
-	return NULL;
-}
-void free_msg_server(msg_server_t* server)
-{
-	event_free(server->listener_event);
-	close(server->sock);
-	thread_pool_destroy(server->thp);
-	event_free(server->thread_event);
-	event_free(server->sigusr1_event);
-	free(server);
-}
-static void sigusr1_handler(evutil_socket_t fd, short event, void *arg)
-{
-	minimsg_context_t * ctx = (minimsg_context_t* ) arg;
-	dbg("got signal\n");
-	minimsg_free_context(ctx);
-	exit(0);
-}
-
-msg_client_t* create_msg_clients()
-{
-	/*msg_client_t* c;
-	c = (msg_client_t*) malloc( sizeof( msg_client_t));
-	if(c){
-		c->info = NULL;
-	}
-	return c;*/
-	return NULL;
-}
-/*
-int add_msg_clients(msg_client_t* c,int type,const char* location, int port,int id)
-{
-	client_info_t* info;
-	info = (client_info_t*) malloc( sizeof( client_info_t));
-	if(!info)return MINIMSG_FAIL;
-	info->type = type;
-	info->location = strdup(location);
-	info->port = port;
-	info->send_q = queue_alloc();
-	info->recv_q = queue_alloc();
-	info->send_efd = eventfd(0,0);
-	info->id = id;
-	info->next = NULL;
-	if( info->location == NULL || info->send_q == NULL || info->recv_q == NULL || info->send_efd == -1){
-		if(info->location) free(info->location);
-		if(info->send_q) queue_free(info->send_q);
-		if(info->recv_q) queue_free(info->recv_q);
-		if(info->send_efd != -1) close(info->send_efd);
-		return MINIMSG_FAIL;
-	}
-
-	if(c->info == NULL){
-		c->info = info;
-	}
-	else{
-		info->next =  c->info;
-		c->info  = info;		
-	}
-	
-	return MINIMSG_OK;
-	
-}*/
-int connect_msg_clients(msg_client_t* c)
-{/*
-        struct sockaddr_in server;
-	client_info_t* info;
-	for(info = c->info ; info ; info = info->next){
-        	info->sock = socket(AF_INET,SOCK_STREAM,0);
-        	if(info->sock == -1)
-        	{
-			handle_error("fail to create socket\n");
-        	}
-		dbg("socket created\n"); 
-		if(info->type == MINIMSG_AF_INET){
-        		server.sin_addr.s_addr = inet_addr(info->location);
-        		server.sin_family = AF_INET;
-        		server.sin_port = htons(info->port);
-		}
-		else if(info->type == MINIMSG_AF_UNIX){
-			//TODO
-		}
-		else handle_error("unknown type");
-
-        	if (connect(info->sock,(struct sockaddr*)&server,sizeof(server))<0)
-        	{
-			if(info->type == MINIMSG_AF_INET)
-				fprintf(stderr,"fail to connect to %s:%d\n",info->location,info->port);
-        	        perror("connect failed.");
-        	  
-        	}	
-	}*/
-	return 0;
-}
 /*
  *  thread_handler 
  *  thread's function that handles all libevent stuff
@@ -1700,7 +1445,18 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	list_iterator_t* it;
 	dbg("\n");
 	ctx = s->ctx;
-		/* remove from fd_list */
+	/* free s->current before remove from fd_list 
+ 	 * because "remove from fd_list" would destroy all element from list
+	 */
+	if(s->isClient){
+		if(s->current){
+			dbg("socket is client so free_fd_state()\n");
+			free_fd_state(s->current);
+			s->current = NULL;
+		}
+	}
+
+	/* remove from fd_list */
 	dbg("remove all fd in fd_list\n");
 	it = list_iterator_new(s->fd_list, LIST_HEAD);
 	prev = list_iterator_next(it);
@@ -1745,24 +1501,17 @@ static void _minimsg_free_socket(minimsg_socket_t* s)
 	}
 	queue_free(s->recv_q);
 	
+	
+	dbg("close recv_efd\n");
 	close(s->recv_efd);
-	
-	
-	
 	pthread_spin_destroy(&s->lock);
-	if(s->isClient){
-		if(s->current){
-			dbg("socket is client so free_fd_state()\n");
-			free_fd_state(s->current);
-			s->current = NULL;
-		}
-	}
 	/* free_fd_state would send msg to s->control_q
 	 * so free control_q later than free_fd_state */
 	while( m =queue_pop(s->control_q)){
 		msg_free(m);
 	}
 	queue_free(s->control_q);
+
 	if(s->listener_event){
 		dbg("event_free listener event\n");
 		event_free(s->listener_event);

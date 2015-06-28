@@ -1,3 +1,9 @@
+/*
+ *	This program acts as client
+ *	It uses MINIMSG_REQ socket type
+ *	socket of type MINIMSG_REQ communicates data in the order of {send,recv}*
+ *	Date: 2015/06/28
+ */
 #include <minimsg/minimsg.h>
 #include <stdio.h>
 #include <event2/event.h>
@@ -7,11 +13,7 @@ int main(int argc , char** argv)
 	minimsg_context_t* ctx;
 	minimsg_socket_t* socket;
 	msg_t * m;
-	struct sockaddr_in server;
 	int i;
-	server.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server.sin_family = AF_INET;
-    server.sin_port = htons(12345);
 	ctx = minimsg_create_context();
 	if(!ctx){
 		fprintf(stderr,"fail to create minimsg context\n");
@@ -21,7 +23,7 @@ int main(int argc , char** argv)
 	socket = minimsg_create_socket(ctx,MINIMSG_REQ);
 	printf("socket is created\n");
 
-	if(minimsg_connect(socket,server) == MINIMSG_OK){
+	if(minimsg_connect(socket,"remote://127.0.0.1:12345") == MINIMSG_OK){
 		printf("connected\n");
 	}
 	else{

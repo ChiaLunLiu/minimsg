@@ -19,7 +19,6 @@
 #ifndef __MINIMSG_H__
 #define __MINIMSG_H__
 #include "ringbuffer.h"
-#include "thread_pool.h"
 #include "queue.h"
 #include "util.h"
 #include "list.h"
@@ -131,23 +130,6 @@ typedef struct _msg_state{
 	list_node_t * ln;
 }fd_state_t;
 
-struct _msg_server{
-	int sock; /* listener sock */
-	thpool_t* thp;
-	struct event * listener_event;
-	struct event* thread_event;
-	struct event* sigusr1_event;
-	void*(*cb)(void*);  /* thread task's function */
-	int (*task_scheduler)(const void*); /* schedule task based on message content */
-	void* base;
-	
-};
-
-
-typedef struct _msg_client{
-//	client_info_t* info;
-	pthread_t pth; /* threads for auto reconnect */
-}msg_client_t;
 
 struct _minimsg_socket{
 	queue_t * pending_send_q; /* when the data can't be sent
@@ -173,7 +155,7 @@ struct _minimsg_socket{
 						  *  For client, when it is NULL, network is not established yet.
 						  */
 	list_node_t* ln; /* linked in sk_list */
-	list_t* fd_list;
+	list_t* fd_list;		/* list of connected fd_state_t */
 	/* client */
 	int connection_state;      /* 0: not connected yet ; 1: connecting ; 2 : connected */ 
 	queue_t* control_q;        /* control_q and control_efd receives control message 
@@ -250,14 +232,7 @@ int msg_recv(int sock,msg_t** m);
 
 
 /* other */
-void do_accept(evutil_socket_t listener, short event, void *arg);
-msg_server_t* create_msg_server(void* base,int port);
-void free_msg_server(msg_server_t* server);
 
-msg_client_t* create_msg_clients();
-int add_msg_clients(msg_client_t* c,int type,const char* location, int port,int id);
-int connect_msg_clients(msg_client_t* c);
-void msg_client_send(msg_client_t* clients, const char* server_location,msg_t* m);
 
 /* ----------------------
  * minimsg API

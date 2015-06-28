@@ -1,7 +1,7 @@
 
 DEBUG= #-DDEBUG=1
 all:
-	gcc client2.c -o client2 -O2 -lminimsg -levent ${DEBUG}
-	gcc send-only-template.c -o client -O2 -lminimsg -levent ${DEBUG}
+	gcc lightweight-client-template.c -o client -O2 -lminimsg -levent ${DEBUG}
+	gcc recv-only-template.c -o recv-only -O2 -lminimsg -levent ${DEBUG}
 clean:
-	rm -f client2 hybrid1 hybrid2
+	rm -f client recv-only
