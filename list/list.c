@@ -106,7 +106,18 @@ list_lpop(list_t *self) {
   node->next = node->prev = NULL;
   return node;
 }
-
+/*
+ * insert the given node before b
+ */
+list_node_t*
+list_insert(list_t* self,list_node_t* b,list_node_t* node){
+	if(!b) return NULL;
+	node->prev = b->prev;
+	node->next = b;
+	b->prev = node;
+	if(b == self->head) self->head = node;
+	self->len++;
+}
 /*
  * Prepend the given node to the list
  * and return the node, NULL on failure.
