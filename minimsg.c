@@ -1577,8 +1577,8 @@ int minimsg_free_context(minimsg_context_t* ctx)
 }
 static void send_control_message(minimsg_context_t* ctx, msg_t* m)
 {
-	uint64_t s;
-	ssize_t u;
+	uint64_t u;
+	ssize_t s;
 	dbg("\n");
 	pthread_spin_lock(&ctx->lock);
 		queue_push(ctx->control_q,m); 
