@@ -111,11 +111,17 @@ list_lpop(list_t *self) {
  */
 list_node_t*
 list_insert(list_t* self,list_node_t* b,list_node_t* node){
-	if(!b) return NULL;
-	node->prev = b->prev;
+	list_node_t* prev;
+	if(!b || ! node) return NULL;
+	prev = b->prev;
+	
+	node->prev = prev;
 	node->next = b;
 	b->prev = node;
+
+	if(prev)prev->next = node;
 	if(b == self->head) self->head = node;
+	
 	self->len++;
 }
 /*
