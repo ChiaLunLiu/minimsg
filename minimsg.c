@@ -1203,7 +1203,7 @@ int minimsg_send(minimsg_socket_t* ss, msg_t* m)
 	queue_data_t* qd;
 	int fail = 0;
 	ctx = ss->ctx;
-	printf("state : %d\n",ss->state);
+	dbg("state : %d\n",ss->state);
 	if(check_send_state(ss) == MINIMSG_FAIL){
 		handle_error("fail to pass check_send_state\n");
 	}
