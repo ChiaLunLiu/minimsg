@@ -3,7 +3,7 @@ MINIMSG_INCLUDE_DIR=/usr/include/minimsg
 DEBUG=#-DDEBUG
 all: library
 library:
-	gcc -fPIC ${DEBUG} -I./list list/list.c list/list_iterator.c list/list_node.c  minimsg.c queue.c ringbuffer.c  util.c -shared -O2 -o libminimsg.so -lpthread -levent
+	gcc -fPIC ${DEBUG} list.c list_iterator.c list_node.c  minimsg.c queue.c ringbuffer.c  util.c -shared -O2 -o libminimsg.so -lpthread -levent
 install:
 	install libminimsg.so /usr/lib
 	mkdir -p ${MINIMSG_INCLUDE_DIR}	
