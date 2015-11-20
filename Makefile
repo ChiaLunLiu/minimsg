@@ -11,7 +11,7 @@ install:
 	install  queue.h ${MINIMSG_INCLUDE_DIR}
 	install  ringbuffer.h ${MINIMSG_INCLUDE_DIR}
 	install  util.h ${MINIMSG_INCLUDE_DIR}
-	install  list/list.h ${MINIMSG_INCLUDE_DIR}
+	install  list.h ${MINIMSG_INCLUDE_DIR}
 uninstall:
 	rm /usr/lib/libminimsg.so
 	rm ${MINIMSG_INCLUDE_DIR}/minimsg.h
